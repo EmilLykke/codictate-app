@@ -5,7 +5,9 @@ import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
-import { appColors } from '../constants/AppColors'
+import { appColors, appFontFamily } from '../constants/AppColors'
+import { TranscriptionLanguageProvider } from '../hooks/settings/transcription-language-context'
+import { WhisperProvider } from '../hooks/whisper/use-whisper-ctx'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -26,14 +28,20 @@ export default function RootLayout() {
   }
 
   return (
-    <>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          contentStyle: { backgroundColor: appColors.page },
-          headerShown: false,
-        }}
-      />
-    </>
+    <WhisperProvider>
+      <TranscriptionLanguageProvider>
+        <StatusBar style="light" />
+        <Stack
+          screenOptions={{
+            contentStyle: { backgroundColor: appColors.page },
+            headerStyle: { backgroundColor: appColors.page },
+            headerTintColor: appColors.foreground,
+            headerTitleStyle: { fontFamily: appFontFamily.sans },
+            headerShadowVisible: false,
+            headerShown: false,
+          }}
+        />
+      </TranscriptionLanguageProvider>
+    </WhisperProvider>
   )
 }
