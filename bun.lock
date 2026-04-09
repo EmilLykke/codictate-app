@@ -5,6 +5,8 @@
     "": {
       "name": "codictate-app",
       "dependencies": {
+        "@expo-google-fonts/iceberg": "^0.4.1",
+        "@expo-google-fonts/iceland": "^0.4.1",
         "@react-navigation/bottom-tabs": "^7.15.5",
         "@react-navigation/elements": "^2.9.10",
         "@react-navigation/native": "^7.1.33",
@@ -245,6 +247,10 @@
     "@eslint/object-schema": ["@eslint/object-schema@3.0.5", "", {}, "sha512-vqTaUEgxzm+YDSdElad6PiRoX4t8VGDjCtt05zn4nU810UIx/uNEV7/lZJ6KwFThKZOzOxzXy48da+No7HZaMw=="],
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.7.1", "", { "dependencies": { "@eslint/core": "^1.2.1", "levn": "^0.4.1" } }, "sha512-rZAP3aVgB9ds9KOeUSL+zZ21hPmo8dh6fnIFwRQj5EAZl9gzR7wxYbYXYysAM8CTqGmUGyp2S4kUdV17MnGuWQ=="],
+
+    "@expo-google-fonts/iceberg": ["@expo-google-fonts/iceberg@0.4.1", "", {}, "sha512-zpwlrmnTdlJAtJHi/RWGpsiKLrgDImQDwDwrS+94xDyl8jR70Jtg2JxCtQB5ua/Bxk9LWLciEFhay2IkklD/OA=="],
+
+    "@expo-google-fonts/iceland": ["@expo-google-fonts/iceland@0.4.1", "", {}, "sha512-7hCwze/SaI1Gn0gaV332hMM/FV2gPrr0Zsje89fMqhHYc4maDbbN/K0KXZ7I7uM+2gKXLLDWWzwwSlRjAqOR7w=="],
 
     "@expo-google-fonts/material-symbols": ["@expo-google-fonts/material-symbols@0.4.29", "", {}, "sha512-3WBhUiK6V91KFlAqWkBRk/lLIHyo0EXg2Paifp+J0LLwlAw7pW2/xf42A5U2g3JzAfzvYHYylfD5Ch4sjvVmqg=="],
 
