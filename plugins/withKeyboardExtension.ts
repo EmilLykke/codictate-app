@@ -541,15 +541,14 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         ad = removeInjectedKeyboardHostRecorder(ad);
 
         if (!ad.includes('url.host == "keyboard-record"')) {
-          ad = ad.replace(
-            `  public override func application(
+          const originalOpenURL = `  public override func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
     return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
-  }`,
-            `  public override func application(
+  }`;
+          const patchedOpenURL = `  public override func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
@@ -559,11 +558,44 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       return true
     }
     return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
-  }`,
-          );
-          console.log(
-            "[withKeyboardExtension] Patched AppDelegate for keyboard-record URL",
-          );
+  }`;
+
+          const patched = ad.replace(originalOpenURL, patchedOpenURL);
+          if (patched !== ad) {
+            ad = patched;
+            console.log(
+              "[withKeyboardExtension] Patched existing openURL handler in AppDelegate",
+            );
+          } else {
+            // openURL method not present in expected format — inject before the class closing brace.
+            const injectedMethod = [
+              "",
+              "  public override func application(",
+              "    _ app: UIApplication,",
+              "    open url: URL,",
+              "    options: [UIApplication.OpenURLOptionsKey: Any] = [:]",
+              "  ) -> Bool {",
+              '    if url.scheme == "codictateapp", url.host == "keyboard-record" {',
+              "      KeyboardHostRecorder.shared.handleDeepLink()",
+              "      return true",
+              "    }",
+              "    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)",
+              "  }",
+              "",
+            ].join("\n");
+            const lastBrace = ad.lastIndexOf("\n}");
+            if (lastBrace !== -1) {
+              ad =
+                ad.slice(0, lastBrace) + injectedMethod + ad.slice(lastBrace);
+              console.log(
+                "[withKeyboardExtension] Injected openURL handler into AppDelegate (no existing method found)",
+              );
+            } else {
+              console.warn(
+                "[withKeyboardExtension] Could not inject openURL handler — AppDelegate format unrecognized",
+              );
+            }
+          }
         }
 
         // Boot the dictation coordinator so JS module / App Intent can drive it via NotificationCenter.

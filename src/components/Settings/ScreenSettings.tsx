@@ -18,18 +18,14 @@ import {
   labelForTranscriptionLanguageId,
   TRANSCRIPTION_LANGUAGE_HINT,
 } from '@/constants/transcription-languages'
-import { ACTIVE_WHISPER_MODEL } from '@/constants/whisper-models'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useTranscriptionLanguage } from '@/hooks/settings/transcription-language-context'
 import {
-  useWhisperCtx,
-  useWhisperModelActions,
-} from '@/hooks/whisper/use-whisper-ctx'
-import {
-  deleteWhisperModelFile,
-  listWhisperModelsOnDisk,
-  type WhisperDiskModelRow,
-} from '@/modules/whisper/whisper-disk-models'
+  deleteModel,
+  ensureModel,
+  listModels,
+  type ModelInfo,
+} from 'codictate-dictation'
 import { formatFileSize } from '@/utils/format-file-size/format-file-size'
 
 function SectionCard({ children }: { children: ReactNode }) {
@@ -48,14 +44,22 @@ function SectionCard({ children }: { children: ReactNode }) {
   return <View style={styles.cardFallback}>{children}</View>
 }
 
+const MODEL_LABELS: Record<string, string> = {
+  base: 'Base (Q5_1)',
+  tiny: 'Tiny (Q5_1)',
+}
+
+const MODEL_USE: Record<string, string> = {
+  base: 'In-app dictation',
+  tiny: 'Keyboard extension',
+}
+
 export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
-  const whisper = useWhisperCtx()
-  const { purgeActiveModelAndReload } = useWhisperModelActions()
-  const [models, setModels] = useState<WhisperDiskModelRow[]>([])
+  const [models, setModels] = useState<ModelInfo[]>([])
 
   const refreshModels = useCallback(() => {
-    setModels(listWhisperModelsOnDisk())
+    void listModels().then(setModels)
   }, [])
 
   useFocusEffect(
@@ -64,44 +68,46 @@ export function ScreenSettings() {
     }, [refreshModels])
   )
 
-  const modelReady = whisper.status === 'ready'
-
-  const confirmDeleteInactive = (row: WhisperDiskModelRow) => {
+  const confirmDelete = (row: ModelInfo) => {
+    const label = MODEL_LABELS[row.variant] ?? row.variant
+    const sizeStr = row.ready ? ` (${formatFileSize(row.size)})` : ''
     Alert.alert(
       'Delete model file?',
-      `Remove ${row.label} (${formatFileSize(row.size)}) from this device? You can download it again later if needed.`,
+      `Remove ${label}${sizeStr} from this device? It will be downloaded again automatically when needed.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            deleteWhisperModelFile(row.filename)
-            void Haptics.notificationAsync(
-              Haptics.NotificationFeedbackType.Success
-            )
-            refreshModels()
+            void deleteModel(row.variant).then(() => {
+              void Haptics.notificationAsync(
+                Haptics.NotificationFeedbackType.Success
+              )
+              refreshModels()
+            })
           },
         },
       ]
     )
   }
 
-  const confirmDeleteActive = (row: WhisperDiskModelRow) => {
+  const confirmRedownload = (row: ModelInfo) => {
+    const label = MODEL_LABELS[row.variant] ?? row.variant
     Alert.alert(
-      'Remove active model?',
-      `${row.label} is the model used for dictation. It will be downloaded again the next time you open the app (about ${formatFileSize(row.size)}).`,
+      'Download model?',
+      `Download ${label} now? This requires Wi-Fi and ~${row.variant === 'base' ? '143' : '57'} MB.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Remove & re-download',
-          style: 'destructive',
+          text: 'Download',
           onPress: () => {
-            void purgeActiveModelAndReload()
-            void Haptics.notificationAsync(
-              Haptics.NotificationFeedbackType.Success
-            )
-            refreshModels()
+            void ensureModel(row.variant).then(() => {
+              void Haptics.notificationAsync(
+                Haptics.NotificationFeedbackType.Success
+              )
+              refreshModels()
+            })
           },
         },
       ]
@@ -175,58 +181,51 @@ export function ScreenSettings() {
 
       <SectionCard>
         <Text style={styles.sectionLabel} selectable>
-          Downloaded models
+          Speech models
         </Text>
         <Text style={styles.subHint} selectable>
-          Files in app storage matching{' '}
-          <Text style={styles.mono}>ggml-*.bin</Text>. The active model is{' '}
-          <Text style={styles.mono}>{ACTIVE_WHISPER_MODEL.filename}</Text>.
+          Stored in the shared App Group container so both the main app and
+          keyboard extension can access them.
         </Text>
 
-        {models.length === 0 ? (
-          <Text style={styles.empty} selectable>
-            No extra model files found.
-          </Text>
-        ) : (
-          models.map((row) => (
-            <View key={row.filename} style={styles.modelRow}>
-              <View style={styles.modelInfo}>
-                <Text style={styles.modelTitle} selectable>
-                  {row.label}
-                </Text>
-                <Text style={styles.modelMeta} selectable>
-                  {formatFileSize(row.size)}
-                  {row.isActive ? ' · In use' : ''}
-                </Text>
-              </View>
+        {models.map((row) => (
+          <View key={row.variant} style={styles.modelRow}>
+            <View style={styles.modelInfo}>
+              <Text style={styles.modelTitle} selectable>
+                {MODEL_LABELS[row.variant] ?? row.variant}
+              </Text>
+              <Text style={styles.modelMeta} selectable>
+                {MODEL_USE[row.variant] ?? ''}
+                {row.ready
+                  ? ` · ${formatFileSize(row.size)}`
+                  : ' · Not downloaded'}
+              </Text>
+            </View>
+            {row.ready ? (
               <Pressable
-                onPress={() =>
-                  row.isActive
-                    ? modelReady
-                      ? confirmDeleteActive(row)
-                      : Alert.alert(
-                          'Please wait',
-                          'Wait until the speech model finishes loading before removing it.'
-                        )
-                    : confirmDeleteInactive(row)
-                }
+                onPress={() => confirmDelete(row)}
                 style={styles.deleteHit}
-                accessibilityLabel={`Delete ${row.label}`}
+                accessibilityLabel={`Delete ${MODEL_LABELS[row.variant] ?? row.variant}`}
                 accessibilityRole="button"
               >
-                <Text
-                  style={[
-                    styles.deleteLabel,
-                    row.isActive && !modelReady && styles.deleteDisabled,
-                  ]}
-                  selectable
-                >
+                <Text style={styles.deleteLabel} selectable>
                   Delete
                 </Text>
               </Pressable>
-            </View>
-          ))
-        )}
+            ) : (
+              <Pressable
+                onPress={() => confirmRedownload(row)}
+                style={styles.deleteHit}
+                accessibilityLabel={`Download ${MODEL_LABELS[row.variant] ?? row.variant}`}
+                accessibilityRole="button"
+              >
+                <Text style={styles.downloadLabel} selectable>
+                  Download
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        ))}
       </SectionCard>
     </ScrollView>
   )
@@ -369,7 +368,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#F87171',
   },
-  deleteDisabled: {
-    color: appColors.foregroundSubtle,
+  downloadLabel: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 15,
+    fontWeight: '600',
+    color: appColors.foreground,
   },
 })

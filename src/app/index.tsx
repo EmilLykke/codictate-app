@@ -22,14 +22,14 @@ import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings
 import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
-import { useWhisperCtx } from '@/hooks/whisper/use-whisper-ctx'
+import { useNativeModel } from '@/hooks/whisper/use-native-model'
 import type { LiveActivity } from 'expo-widgets'
 import DictationLiveActivity, {
   type DictationActivityProps,
 } from '@/widgets/DictationLiveActivity'
 
 export default function Index() {
-  const whisper = useWhisperCtx()
+  const model = useNativeModel()
 
   return (
     <>
@@ -45,10 +45,10 @@ export default function Index() {
           headerRight: () => <ButtonHeaderSettings />,
         }}
       />
-      {whisper.status === 'downloading' || whisper.status === 'initializing' ? (
-        <SetupScreen whisper={whisper} />
-      ) : whisper.status === 'error' ? (
-        <ErrorScreen error={whisper.error} onRetry={whisper.retry} />
+      {model.status === 'checking' || model.status === 'downloading' ? (
+        <SetupScreen model={model} />
+      ) : model.status === 'error' ? (
+        <ErrorScreen error={model.error} onRetry={model.retry} />
       ) : (
         <DictationScreen />
       )}
@@ -75,7 +75,9 @@ function DictationScreen() {
     if (process.env.EXPO_OS !== 'ios') return
     if (dictState === 'recording') {
       try {
-        activityRef.current = DictationLiveActivity.start({ status: 'recording' })
+        activityRef.current = DictationLiveActivity.start({
+          status: 'recording',
+        })
       } catch {
         activityRef.current = null
       }
@@ -171,20 +173,20 @@ function DictationScreen() {
 }
 
 type SetupScreenProps =
+  | { status: 'checking' }
   | { status: 'downloading'; progress: number }
-  | { status: 'initializing' }
 
-function SetupScreen(props: { whisper: SetupScreenProps }) {
-  const { whisper } = props
-  const isDownloading = whisper.status === 'downloading'
-  const progress = isDownloading ? whisper.progress : 1
+function SetupScreen(props: { model: SetupScreenProps }) {
+  const { model } = props
+  const isDownloading = model.status === 'downloading'
+  const progress = isDownloading ? model.progress : 0
   const pct = Math.round(progress * 100)
 
   return (
     <View style={styles.centeredFill}>
       <View style={styles.setupContent}>
         <Text style={styles.setupTitle}>
-          {isDownloading ? 'Downloading speech model' : 'Loading model…'}
+          {isDownloading ? 'Downloading speech model' : 'Loading…'}
         </Text>
 
         <View style={styles.progressTrack}>
@@ -202,9 +204,7 @@ function SetupScreen(props: { whisper: SetupScreenProps }) {
         </View>
 
         <Text style={styles.setupSubtitle}>
-          {isDownloading
-            ? `${pct}% · ~57 MB · one-time download`
-            : 'Almost ready…'}
+          {isDownloading ? `${pct}% · ~143 MB · one-time download` : ''}
         </Text>
       </View>
     </View>
@@ -215,7 +215,7 @@ function ErrorScreen({
   error,
   onRetry,
 }: {
-  error: Error
+  error: string
   onRetry: () => void
 }) {
   return (
@@ -230,7 +230,7 @@ function ErrorScreen({
         Failed to load model
       </Text>
       <Text style={styles.errorBody} selectable>
-        {error.message}
+        {error}
       </Text>
       <Pressable onPress={onRetry} style={styles.retryButton}>
         <Text style={styles.retryLabel}>Try again</Text>

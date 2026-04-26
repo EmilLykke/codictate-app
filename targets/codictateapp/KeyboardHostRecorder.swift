@@ -119,6 +119,26 @@ private final class KeyboardHostTranscription: NSObject {
     }
 }
 
+// MARK: - Darwin IPC (keyboard extension → host app)
+
+private let kbdDarwinStartName = "com.emillo2003.codictate.dictation.keyboard.start"
+private let kbdDarwinStopName  = "com.emillo2003.codictate.dictation.keyboard.stop"
+
+// C-compatible callback — relays Darwin notification name to NSNotificationCenter on the main thread.
+// Must be file-scope (not a method) because CFNotificationCallback is a C function pointer.
+private func kbdDarwinCallback(
+    _ center: CFNotificationCenter?,
+    _ observer: UnsafeMutableRawPointer?,
+    _ name: CFNotificationName?,
+    _ object: UnsafeRawPointer?,
+    _ userInfo: CFDictionary?
+) {
+    guard let rawName = name?.rawValue as String? else { return }
+    DispatchQueue.main.async {
+        NotificationCenter.default.post(name: NSNotification.Name(rawName), object: nil)
+    }
+}
+
 /// Runs inside the **main iOS app**. Records natively to the App Group regardless of which
 /// entry point initiated the session — keyboard URL, JS module, or App Intent. JS thread
 /// suspension does not stop recording because all control flow lives in Swift.
@@ -158,10 +178,10 @@ final class KeyboardHostRecorder: NSObject {
     /// Wires NotificationCenter observers so other Swift modules (the JS bridge module,
     /// App Intent, etc.) can drive recording without a direct symbol dependency on this class.
     /// Idempotent — call from `application(_:didFinishLaunchingWithOptions:)`.
+    /// Called from `application(_:didFinishLaunchingWithOptions:)` — already on the main thread.
+    /// Installs observers synchronously so they are ready before `applicationDidBecomeActive` fires.
     func bootstrap() {
-        DispatchQueue.main.async { [weak self] in
-            self?.installNotificationObservers()
-        }
+        installNotificationObservers()
     }
 
     private func installNotificationObservers() {
@@ -193,6 +213,28 @@ final class KeyboardHostRecorder: NSObject {
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+
+        // Darwin (cross-process) listeners for keyboard extension.
+        // Handles the case where Codictate is already in the foreground when the keyboard
+        // Dictate button is tapped — didBecomeActiveNotification never fires then.
+        let darwinCenter = CFNotificationCenterGetDarwinNotifyCenter()
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            darwinCenter, selfPtr, kbdDarwinCallback,
+            kbdDarwinStartName as CFString, nil, .deliverImmediately
+        )
+        CFNotificationCenterAddObserver(
+            darwinCenter, selfPtr, kbdDarwinCallback,
+            kbdDarwinStopName as CFString, nil, .deliverImmediately
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleDarwinStart),
+            name: NSNotification.Name(kbdDarwinStartName), object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleDarwinStop),
+            name: NSNotification.Name(kbdDarwinStopName), object: nil
+        )
     }
 
     @objc private func handleStartNotification(_ note: Notification) {
@@ -209,14 +251,31 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     @objc private func handleAppActivation() {
-        // App Intent path: phase was set to "start" while app was backgrounded.
-        // No active recorder yet → kick off session.
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        // Force a reload from the App Group container to pick up writes from the keyboard extension
+        // or App Intent that may have occurred while this process was suspended.
+        suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
         guard phase == KeyboardDictationBridge.phaseStart else { return }
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
         startSessionInternal(suite: suite, source: source)
+    }
+
+    // Received when the keyboard extension posts a Darwin start notification.
+    // Fires even when Codictate is already in the foreground (unlike didBecomeActiveNotification).
+    @objc private func handleDarwinStart() {
+        guard recorder == nil else { return }
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
+        guard phase == KeyboardDictationBridge.phaseStart else { return }
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceKeyboard
+        startSessionInternal(suite: suite, source: source)
+    }
+
+    @objc private func handleDarwinStop() {
+        requestStop()
     }
 
     // MARK: - Public entry points
@@ -415,6 +474,7 @@ final class KeyboardHostRecorder: NSObject {
             return
         }
 
+        suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
         guard phase == KeyboardDictationBridge.phaseStart else {
             NSLog("[KeyboardHost] Deep link ignored; phase=\(phase)")

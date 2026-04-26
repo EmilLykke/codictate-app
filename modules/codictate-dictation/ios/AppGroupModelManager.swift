@@ -1,18 +1,13 @@
 import Foundation
 
-/// Downloads and locates Whisper GGML models in the App Group container.
-///
-/// Two models live side-by-side:
-///   • `tiny`  (~57 MB) — used by the keyboard extension and any keyboard-source dictation
-///                        (extension memory is tight, can't load Base)
-///   • `base`  (~143 MB) — used by host-app dictation (in-app + Action Button) for higher quality
-///
-/// Both download into the shared App Group so the keyboard extension can read either one.
-final class ModelManager {
+/// Mirrors `ModelManager` from the main app target.
+/// Duplicated intentionally — the Expo module pod cannot import main-app symbols.
+/// Keep variant filenames, URLs, and minBytes in sync with `ModelManager.swift`.
+final class AppGroupModelManager {
 
     enum Variant: String {
-        case tiny
         case base
+        case tiny
 
         var filename: String {
             switch self {
@@ -42,23 +37,14 @@ final class ModelManager {
         }
     }
 
-    static let shared = ModelManager()
+    static let shared = AppGroupModelManager()
 
     private let groupID = "group.com.emillo2003.codictate-app"
 
     private init() {}
 
-    // MARK: - Public API
-
-    /// Default model used by `KeyboardHostTranscription`. Stays `.tiny` for backward
-    /// compatibility with the keyboard handoff path; host/intent paths call
-    /// `ensureModel(variant:...)` explicitly with `.base`.
-    var modelFilePath: String? {
-        modelFilePath(for: .tiny)
-    }
-
-    var modelIsReady: Bool {
-        modelIsReady(for: .tiny)
+    var containerURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID)
     }
 
     func modelFilePath(for variant: Variant) -> String? {
@@ -72,15 +58,6 @@ final class ModelManager {
         return size >= variant.minBytes
     }
 
-    /// Default ensure (Tiny) — kept for backward compatibility with keyboard flow.
-    func ensureModel(
-        onProgress: @escaping (Double) -> Void,
-        onComplete: @escaping (Result<String, Error>) -> Void
-    ) {
-        ensureModel(variant: .tiny, onProgress: onProgress, onComplete: onComplete)
-    }
-
-    /// Pick a specific variant. Skips the network if the file already exists at >= minBytes.
     func ensureModel(
         variant: Variant,
         onProgress: @escaping (Double) -> Void,
@@ -88,23 +65,21 @@ final class ModelManager {
     ) {
         guard let container = containerURL else {
             onComplete(.failure(NSError(
-                domain: "ModelManager",
-                code: 1,
+                domain: "AppGroupModelManager", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable."]
             )))
             return
         }
 
-        let destPath = container.appendingPathComponent(variant.filename)
+        let destURL = container.appendingPathComponent(variant.filename)
 
         if modelIsReady(for: variant), let path = modelFilePath(for: variant) {
             onComplete(.success(path))
             return
         }
 
-        // Stale / partial file: clear before downloading.
-        if FileManager.default.fileExists(atPath: destPath.path) {
-            try? FileManager.default.removeItem(at: destPath)
+        if FileManager.default.fileExists(atPath: destURL.path) {
+            try? FileManager.default.removeItem(at: destURL)
         }
 
         onProgress(0)
@@ -112,20 +87,17 @@ final class ModelManager {
             onProgress: onProgress,
             onDone: { tempURL, error in
                 DispatchQueue.main.async {
-                    if let error {
-                        onComplete(.failure(error))
-                        return
-                    }
+                    if let error { onComplete(.failure(error)); return }
                     guard let tempURL else {
                         onComplete(.failure(NSError(
-                            domain: "ModelManager", code: 2,
+                            domain: "AppGroupModelManager", code: 2,
                             userInfo: [NSLocalizedDescriptionKey: "Download produced no file."]
                         )))
                         return
                     }
                     do {
-                        try FileManager.default.moveItem(at: tempURL, to: destPath)
-                        onComplete(.success(destPath.path))
+                        try FileManager.default.moveItem(at: tempURL, to: destURL)
+                        onComplete(.success(destURL.path))
                     } catch {
                         onComplete(.failure(error))
                     }
@@ -135,13 +107,10 @@ final class ModelManager {
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         let task = session.downloadTask(with: variant.url)
         task.resume()
-        // Keep delegate alive for the session lifetime.
-        objc_setAssociatedObject(session, &ModelManager.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(session, &AppGroupModelManager.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
     }
 
     private static var delegateKey: UInt8 = 0
-
-    // MARK: - Private
 
     private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         let onProgress: (Double) -> Void
@@ -167,11 +136,5 @@ final class ModelManager {
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
             if let error { onDone(nil, error) }
         }
-    }
-
-    private var containerURL: URL? {
-        FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: groupID
-        )
     }
 }

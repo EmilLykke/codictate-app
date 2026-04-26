@@ -32,12 +32,16 @@ private final class GlassKey: UIControl {
     let contentIcon  = UIImageView()
 
     private let blurView: UIVisualEffectView
+    private let tintOverlay = UIView()
+    private let isSpecial: Bool
 
     init(special: Bool = false) {
+        self.isSpecial = special
         if #available(iOS 26.0, *) {
             blurView = UIVisualEffectView(effect: UIGlassEffect())
         } else {
-            let style: UIBlurEffect.Style = special ? .systemMaterialDark : .systemUltraThinMaterialDark
+            // Adaptive styles respect system dark/light mode automatically.
+            let style: UIBlurEffect.Style = special ? .systemMaterial : .systemUltraThinMaterial
             blurView = UIVisualEffectView(effect: UIBlurEffect(style: style))
         }
         super.init(frame: .zero)
@@ -49,21 +53,22 @@ private final class GlassKey: UIControl {
         blurView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(blurView)
 
-        // On older iOS: add a white tint overlay so letter keys appear lighter than special keys
+        // Tint overlay: in dark mode, letter keys get extra white brightness to stand out.
+        // In light mode, the adaptive material already provides correct key contrast.
         if #available(iOS 26.0, *) { /* UIGlassEffect handles this */ } else {
-            let tint = UIView()
-            tint.backgroundColor = UIColor.white.withAlphaComponent(special ? 0.04 : 0.15)
-            tint.isUserInteractionEnabled = false
-            tint.translatesAutoresizingMaskIntoConstraints = false
-            blurView.contentView.addSubview(tint)
-            pin(tint, to: blurView.contentView)
+            tintOverlay.isUserInteractionEnabled = false
+            tintOverlay.translatesAutoresizingMaskIntoConstraints = false
+            blurView.contentView.addSubview(tintOverlay)
+            pin(tintOverlay, to: blurView.contentView)
+            updateTintForCurrentAppearance()
         }
 
-        contentLabel.textColor = .white
+        // Use adaptive label colour so text is readable in both light and dark mode.
+        contentLabel.textColor = .label
         contentLabel.textAlignment = .center
         contentLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        contentIcon.tintColor = .white
+        contentIcon.tintColor = .label
         contentIcon.contentMode = .scaleAspectFit
         contentIcon.translatesAutoresizingMaskIntoConstraints = false
 
@@ -85,11 +90,24 @@ private final class GlassKey: UIControl {
             contentIcon.heightAnchor.constraint(equalToConstant: 18),
         ])
 
-        // Subtle drop-shadow so keys lift off the glass background
         layer.shadowColor   = UIColor.black.cgColor
-        layer.shadowOpacity = 0.22
+        layer.shadowOpacity = 0.12
         layer.shadowRadius  = 0.5
         layer.shadowOffset  = CGSize(width: 0, height: 1)
+    }
+
+    private func updateTintForCurrentAppearance() {
+        if traitCollection.userInterfaceStyle == .dark {
+            tintOverlay.backgroundColor = UIColor.white.withAlphaComponent(isSpecial ? 0.04 : 0.15)
+        } else {
+            tintOverlay.backgroundColor = .clear
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        updateTintForCurrentAppearance()
     }
 
     // MARK: Configuration helpers
@@ -250,7 +268,7 @@ final class DictationKeyboardView: UIView {
         // mic icon
         let cfg = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         dictateIcon.image   = UIImage(systemName: "mic.fill", withConfiguration: cfg)
-        dictateIcon.tintColor = UIColor(white: 0.9, alpha: 1)
+        dictateIcon.tintColor = .label
         dictateIcon.contentMode = .scaleAspectFit
         dictateIcon.setContentHuggingPriority(.required, for: .horizontal)
         dictateIcon.translatesAutoresizingMaskIntoConstraints = false
@@ -258,7 +276,7 @@ final class DictationKeyboardView: UIView {
         // label
         dictateLabel.text      = "Dictate"
         dictateLabel.font      = UIFont.systemFont(ofSize: 13, weight: .medium)
-        dictateLabel.textColor = UIColor(white: 0.9, alpha: 1)
+        dictateLabel.textColor = .label
         dictateLabel.translatesAutoresizingMaskIntoConstraints = false
 
         dictateStack.axis      = .horizontal
@@ -390,7 +408,7 @@ final class DictationKeyboardView: UIView {
     private func setDictateActive(_ on: Bool) {
         let color: UIColor = on
             ? UIColor(red: 0.95, green: 0.25, blue: 0.25, alpha: 1)
-            : UIColor(white: 0.9, alpha: 1)
+            : .label
         dictateIcon.tintColor  = color
         dictateLabel.textColor = color
 

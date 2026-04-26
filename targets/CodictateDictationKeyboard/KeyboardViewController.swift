@@ -1,4 +1,5 @@
 import UIKit
+import Foundation
 
 private enum KbdSuite {
     static let suiteName        = "group.com.emillo2003.codictate-app"
@@ -6,6 +7,8 @@ private enum KbdSuite {
     static let wavFileKey       = "kbdDictationWavFile"
     static let errorKey         = "kbdDictationHostError"
     static let transcriptKey    = "kbdTranscript"
+    static let sourceKey        = "kbdDictationSource"
+    static let sourceKeyboard   = "keyboard"
 
     static let phaseIdle        = "idle"
     static let phaseStart       = "start"
@@ -15,6 +18,10 @@ private enum KbdSuite {
     static let phaseReady       = "ready"
     static let phaseFailed      = "failed"
 }
+
+// Darwin notification names (cross-process IPC to the host app).
+private let kbdDarwinStartName = "com.emillo2003.codictate.dictation.keyboard.start"
+private let kbdDarwinStopName  = "com.emillo2003.codictate.dictation.keyboard.stop"
 
 final class KeyboardViewController: UIInputViewController, DictationKeyboardViewDelegate {
 
@@ -126,11 +133,19 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         let fileName = "kbd-\(UUID().uuidString).wav"
         suite.set(KbdSuite.phaseStart, forKey: KbdSuite.phaseKey)
         suite.set(fileName, forKey: KbdSuite.wavFileKey)
+        suite.set(KbdSuite.sourceKeyboard, forKey: KbdSuite.sourceKey)
         suite.removeObject(forKey: KbdSuite.errorKey)
         suite.removeObject(forKey: KbdSuite.transcriptKey)
         suite.synchronize()
         viewState = .recording
 
+        // Darwin notification reaches the host app immediately if it is already running/active.
+        // This covers the case where the keyboard is opened while Codictate is in the foreground,
+        // because `UIApplication.didBecomeActiveNotification` never fires in that scenario.
+        postDarwinNotification(kbdDarwinStartName)
+
+        // URL scheme brings the app to the foreground if it is suspended or not running.
+        // `handleDeepLink` guards against double-start by checking the App Group phase.
         guard let url = URL(string: "codictateapp://keyboard-record") else { return }
         extensionContext?.open(url) { [weak self] ok in
             DispatchQueue.main.async {
@@ -154,8 +169,17 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         }
         suite.set(KbdSuite.phaseStopRequested, forKey: KbdSuite.phaseKey)
         suite.synchronize()
+        postDarwinNotification(kbdDarwinStopName)
         viewState = .processing
         startResultPolling()
+    }
+
+    private func postDarwinNotification(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(rawValue: name as CFString),
+            nil, nil, true
+        )
     }
 
     // MARK: Phase polling

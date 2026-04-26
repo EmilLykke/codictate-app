@@ -32,7 +32,7 @@ public final class CodictateDictationModule: Module {
     public func definition() -> ModuleDefinition {
         Name("CodictateDictation")
 
-        Events("onStateChange", "onTranscript", "onError")
+        Events("onStateChange", "onTranscript", "onError", "onModelProgress")
 
         OnCreate {
             self.installObservers()
@@ -90,6 +90,50 @@ public final class CodictateDictationModule: Module {
             suite.set("idle", forKey: Self.phaseKey)
             suite.removeObject(forKey: Self.errorKey)
             suite.synchronize()
+        }
+
+        // MARK: - Model management
+
+        AsyncFunction("isModelReady") { (variantStr: String?) -> Bool in
+            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            return AppGroupModelManager.shared.modelIsReady(for: variant)
+        }
+
+        AsyncFunction("ensureModel") { (variantStr: String?) async throws -> Void in
+            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            return try await withCheckedThrowingContinuation { continuation in
+                AppGroupModelManager.shared.ensureModel(
+                    variant: variant,
+                    onProgress: { [weak self] progress in
+                        self?.sendEvent("onModelProgress", ["variant": variantStr ?? "base", "progress": progress])
+                    },
+                    onComplete: { result in
+                        switch result {
+                        case .success: continuation.resume()
+                        case .failure(let err): continuation.resume(throwing: err)
+                        }
+                    }
+                )
+            }
+        }
+
+        AsyncFunction("deleteModel") { (variantStr: String?) -> Void in
+            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        AsyncFunction("listModels") { () -> [[String: Any]] in
+            let variants: [AppGroupModelManager.Variant] = [.base, .tiny]
+            return variants.map { variant in
+                let ready = AppGroupModelManager.shared.modelIsReady(for: variant)
+                var size: Int64 = 0
+                if let path = AppGroupModelManager.shared.modelFilePath(for: variant),
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
+                    size = (attrs[.size] as? Int64) ?? 0
+                }
+                return ["variant": variant.rawValue, "ready": ready, "size": size]
+            }
         }
     }
 

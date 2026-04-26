@@ -30,10 +30,15 @@ export type StateChangeEvent = {
 export type TranscriptEvent = { transcript: string };
 export type ErrorEvent = { message: string };
 
+export type ModelVariant = "base" | "tiny";
+export type ModelProgressEvent = { variant: ModelVariant; progress: number };
+export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
+
 type CodictateDictationEvents = {
   onStateChange: (event: StateChangeEvent) => void;
   onTranscript: (event: TranscriptEvent) => void;
   onError: (event: ErrorEvent) => void;
+  onModelProgress: (event: ModelProgressEvent) => void;
 };
 
 declare class CodictateDictationNativeModule extends NativeModule<CodictateDictationEvents> {
@@ -43,6 +48,10 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   getState(): Promise<DictationStateSnapshot>;
   consumeTranscript(): Promise<string | null>;
   acknowledgeError(): Promise<void>;
+  isModelReady(variant?: ModelVariant): Promise<boolean>;
+  ensureModel(variant?: ModelVariant): Promise<void>;
+  deleteModel(variant?: ModelVariant): Promise<void>;
+  listModels(): Promise<ModelInfo[]>;
 }
 
 const Native =
@@ -89,4 +98,32 @@ export function onError(
   listener: (event: ErrorEvent) => void,
 ): EventSubscription {
   return Native.addListener("onError", listener);
+}
+
+export function onModelProgress(
+  listener: (event: ModelProgressEvent) => void,
+): EventSubscription {
+  return Native.addListener("onModelProgress", listener);
+}
+
+export async function isModelReady(
+  variant: ModelVariant = "base",
+): Promise<boolean> {
+  return Native.isModelReady(variant);
+}
+
+export async function ensureModel(
+  variant: ModelVariant = "base",
+): Promise<void> {
+  return Native.ensureModel(variant);
+}
+
+export async function deleteModel(
+  variant: ModelVariant = "base",
+): Promise<void> {
+  return Native.deleteModel(variant);
+}
+
+export async function listModels(): Promise<ModelInfo[]> {
+  return Native.listModels();
 }
