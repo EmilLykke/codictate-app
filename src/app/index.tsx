@@ -1,20 +1,32 @@
 import { Image } from 'expo-image'
+import * as Clipboard from 'expo-clipboard'
+import * as Haptics from 'expo-haptics'
 import {
-  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   View,
 } from 'react-native'
 import { Stack } from 'expo-router'
+import { useEffect, useRef, useState } from 'react'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Animated from 'react-native-reanimated'
+import {
+  CardDictationComposer,
+  type TextSelection,
+} from '@/components/Dictation/CardDictationComposer'
 import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings'
 import { RecordButton } from '@/components/Dictation/RecordButton'
-import { TranscriptCard } from '@/components/Dictation/TranscriptCard'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
 import { useWhisperCtx } from '@/hooks/whisper/use-whisper-ctx'
+import type { LiveActivity } from 'expo-widgets'
+import DictationLiveActivity, {
+  type DictationActivityProps,
+} from '@/widgets/DictationLiveActivity'
 
 export default function Index() {
   const whisper = useWhisperCtx()
@@ -48,9 +60,32 @@ function DictationScreen() {
   const insets = useSafeAreaInsets()
   const { dictState, transcript, dictError, start, stop, clear } =
     useRealtimeDictation()
+  const [draft, setDraft] = useState('')
+  const [selection, setSelection] = useState<TextSelection>({
+    start: 0,
+    end: 0,
+  })
 
   const isRecording = dictState === 'recording'
   const isProcessing = dictState === 'processing'
+
+  const activityRef = useRef<LiveActivity<DictationActivityProps> | null>(null)
+
+  useEffect(() => {
+    if (process.env.EXPO_OS !== 'ios') return
+    if (dictState === 'recording') {
+      try {
+        activityRef.current = DictationLiveActivity.start({ status: 'recording' })
+      } catch {
+        activityRef.current = null
+      }
+    } else if (dictState === 'processing') {
+      void activityRef.current?.update({ status: 'processing' }).catch(() => {})
+    } else if (dictState === 'idle' && activityRef.current) {
+      void activityRef.current.end('default').catch(() => {})
+      activityRef.current = null
+    }
+  }, [dictState])
 
   const handleButtonPress = () => {
     if (isRecording) {
@@ -60,82 +95,78 @@ function DictationScreen() {
     }
   }
 
-  const showTranscript = Boolean(transcript) && !isRecording && !isProcessing
-  const showNudge = !isRecording && !isProcessing
+  useEffect(() => {
+    if (!transcript) return
+    const next = insertTextIntoDraft(draft, transcript, selection)
+    setDraft(next.text)
+    setSelection(next.selection)
+    clear()
+  }, [clear, draft, selection, transcript])
+
+  const handleCopyDraft = async () => {
+    if (!draft.trim()) {
+      Alert.alert('Nothing to copy', 'Dictate or type something first.')
+      return
+    }
+    await Clipboard.setStringAsync(draft)
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+  }
+
+  const handleShareDraft = async () => {
+    if (!draft.trim()) {
+      Alert.alert('Nothing to share', 'Dictate or type something first.')
+      return
+    }
+    await Share.share({ message: draft })
+  }
+
+  const handleClearDraft = async () => {
+    setDraft('')
+    setSelection({ start: 0, end: 0 })
+    await Haptics.selectionAsync()
+  }
 
   return (
-    <View
+    <KeyboardAvoidingView
       style={[
         styles.dictationRoot,
         { paddingBottom: Math.max(insets.bottom, 12) },
       ]}
+      behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.resultSlot}>
-        <View style={styles.resultSlotInner}>
-          {isProcessing ? (
-            <View style={styles.resultStateTop}>
-              <View style={styles.processingBox}>
-                <ActivityIndicator color="rgba(255,255,255,0.7)" />
-                <Text style={styles.processingText} selectable>
-                  Transcribing on your device…
-                </Text>
-              </View>
-            </View>
-          ) : null}
+        <CardDictationComposer
+          value={draft}
+          selection={selection}
+          onChangeText={setDraft}
+          onSelectionChange={(event) =>
+            setSelection(event.nativeEvent.selection)
+          }
+          onCopyPress={() => void handleCopyDraft()}
+          onSharePress={() => void handleShareDraft()}
+          onClearPress={() => void handleClearDraft()}
+        />
+      </View>
 
-          {isRecording ? (
-            <View style={styles.resultStateTop}>
-              <View style={styles.livePreview}>
-                <Text style={styles.livePreviewText} selectable>
-                  Listening… tap the button again to stop.
-                </Text>
-              </View>
-            </View>
-          ) : null}
-
-          {showTranscript && transcript ? (
-            <TranscriptCard transcript={transcript} onClear={clear} />
-          ) : null}
-
-          {!isProcessing && !isRecording && !transcript ? (
-            <Text style={styles.resultPlaceholder} selectable>
-              Your transcription will appear here.
-            </Text>
-          ) : null}
+      {dictError ? (
+        <View style={styles.errorBadge}>
+          <Text style={styles.errorText} selectable>
+            {dictError}
+          </Text>
         </View>
-      </View>
-
-      <View style={styles.errorBand}>
-        {dictError ? (
-          <View style={styles.errorBadge}>
-            <Text style={styles.errorText} selectable>
-              {dictError}
-            </Text>
-          </View>
-        ) : null}
-      </View>
+      ) : null}
 
       <View style={styles.controlsColumn}>
-        {showNudge ? (
-          <Image
-            source="sf:chevron.compact.down"
-            style={styles.nudgeChevron}
-            contentFit="contain"
-            tintColor="rgba(255,255,255,0.28)"
-          />
-        ) : null}
         <RecordButton dictState={dictState} onPress={handleButtonPress} />
         <Text style={styles.hint}>
           {isRecording
             ? 'Tap to stop'
             : isProcessing
               ? 'Transcribing…'
-              : transcript
-                ? 'Tap to dictate again'
-                : 'Tap to start dictating'}
+              : 'Tap to dictate'}
         </Text>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   )
 }
 
@@ -214,6 +245,7 @@ const styles = StyleSheet.create({
     backgroundColor: appColors.page,
     paddingHorizontal: 24,
     paddingTop: 8,
+    gap: 12,
   },
   resultSlot: {
     flex: 1,
@@ -221,28 +253,6 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 368,
     alignSelf: 'center',
-  },
-  resultSlotInner: {
-    flex: 1,
-    minHeight: 0,
-    width: '100%',
-    justifyContent: 'flex-start',
-    alignItems: 'stretch',
-  },
-  resultStateTop: {
-    width: '100%',
-    paddingTop: 16,
-    alignItems: 'center',
-  },
-  resultPlaceholder: {
-    fontFamily: appFontFamily.sans,
-    fontSize: 15,
-    lineHeight: 22,
-    color: appColors.foregroundSubtle,
-    textAlign: 'center',
-    paddingTop: 16,
-    paddingHorizontal: 16,
-    width: '100%',
   },
   centeredFill: {
     flex: 1,
@@ -252,56 +262,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     gap: 16,
   },
-  livePreview: {
-    width: '100%',
-    maxWidth: 340,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderCurve: 'continuous',
-  },
-  livePreviewText: {
-    fontFamily: appFontFamily.sans,
-    fontSize: appFontSize.body - 3,
-    lineHeight: 28,
-    color: appColors.foregroundMuted,
-    textAlign: 'center',
-  },
-  processingBox: {
-    width: '100%',
-    maxWidth: 340,
-    paddingVertical: 20,
-    paddingHorizontal: 20,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderCurve: 'continuous',
-    alignItems: 'center',
-    gap: 12,
-  },
-  processingText: {
-    fontFamily: appFontFamily.sans,
-    fontSize: 15,
-    color: appColors.foregroundMuted,
-    textAlign: 'center',
-  },
-  errorBand: {
-    width: '100%',
-    maxWidth: 368,
-    alignSelf: 'center',
-    minHeight: 76,
-    justifyContent: 'flex-end',
-    paddingBottom: 6,
-  },
   controlsColumn: {
     alignItems: 'center',
     gap: 6,
-    paddingTop: 0,
-  },
-  nudgeChevron: {
-    width: 20,
-    height: 12,
-    marginBottom: 2,
   },
   hint: {
     fontFamily: appFontFamily.sans,
@@ -316,7 +279,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 12,
     backgroundColor: 'rgba(220,38,38,0.15)',
-    maxWidth: 340,
+    maxWidth: 368,
     alignSelf: 'center',
   },
   errorText: {
@@ -389,3 +352,23 @@ const styles = StyleSheet.create({
     color: appColors.foreground,
   },
 })
+
+function insertTextIntoDraft(
+  draft: string,
+  insertedText: string,
+  selection: TextSelection
+): { text: string; selection: TextSelection } {
+  const before = draft.slice(0, selection.start)
+  const after = draft.slice(selection.end)
+  const leadingSpacer =
+    before.length > 0 && !/[\s([{'"-]$/.test(before) ? ' ' : ''
+  const trailingSpacer =
+    after.length > 0 && !/^[\s,.;:!?)}\]'"-]/.test(after) ? ' ' : ''
+  const merged = `${before}${leadingSpacer}${insertedText}${trailingSpacer}${after}`
+  const cursor = before.length + leadingSpacer.length + insertedText.length
+
+  return {
+    text: merged,
+    selection: { start: cursor, end: cursor },
+  }
+}

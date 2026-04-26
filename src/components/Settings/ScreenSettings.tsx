@@ -7,6 +7,7 @@ import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -114,6 +115,37 @@ export function ScreenSettings() {
       contentContainerStyle={styles.scrollContent}
       showsVerticalScrollIndicator={false}
     >
+      {Platform.OS === 'ios' ? (
+        <SectionCard>
+          <Text style={styles.sectionLabel} selectable>
+            Dictation keyboard (iOS)
+          </Text>
+          <Text style={styles.hint} selectable>
+            Add <Text style={styles.stepsEm}>Codictate</Text> under Settings ›
+            General › Keyboard › Keyboards. It includes a normal QWERTY row for
+            typing. The microphone cannot run inside the extension: dictation
+            opens the main app to record, then transcribes on the device while
+            you switch back (background audio keeps the session alive).
+          </Text>
+          <Text style={styles.stepsList} selectable>
+            1. Enable the keyboard and{' '}
+            <Text style={styles.stepsEm}>Allow Full Access</Text>
+            {'\n'}
+            2. First tap: opens Codictate to start recording — return to your
+            app
+            {'\n'}
+            3. Second tap: stop; text is inserted into the field (also copied to
+            the clipboard). The small (Tiny) model in shared storage must be
+            present — open Codictate on Wi‑Fi once if the keyboard asks to
+            download it
+            {'\n'}
+            4. You can still dictate inside Codictate and use{' '}
+            <Text style={styles.stepsEm}>Copy</Text> /{' '}
+            <Text style={styles.stepsEm}>Share</Text> as before
+          </Text>
+        </SectionCard>
+      ) : null}
+
       <SectionCard>
         <Text style={styles.sectionLabel} selectable>
           Transcription
@@ -236,6 +268,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: appColors.foregroundSubtle,
   },
+  keyboardSetupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  rowPressed: {
+    opacity: 0.72,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -266,6 +308,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     color: appColors.foregroundMuted,
+  },
+  stepsList: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 13,
+    lineHeight: 20,
+    color: appColors.foregroundMuted,
+    marginTop: 4,
+  },
+  stepsEm: {
+    fontFamily: appFontFamily.sans,
+    fontWeight: '600',
+    color: appColors.foreground,
   },
   subHint: {
     fontFamily: appFontFamily.sans,

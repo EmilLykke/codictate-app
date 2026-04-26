@@ -1,4 +1,3 @@
-import * as Clipboard from 'expo-clipboard'
 import {
   AudioModule,
   RecordingPresets,
@@ -7,8 +6,7 @@ import {
 } from 'expo-audio'
 import { File } from 'expo-file-system'
 import * as Haptics from 'expo-haptics'
-import { useCallback, useState } from 'react'
-import type { TranscribeResult } from 'whisper.rn'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   WHISPER_MIN_RECORDING_BYTES,
   WHISPER_RECORDING_OPTIONS,
@@ -28,12 +26,21 @@ export type RealtimeDictation = {
   clear: () => void
 }
 
-function textFromTranscribeResult(result: TranscribeResult): string {
+type WhisperSegment = {
+  text: string
+}
+
+type WhisperTranscribeResult = {
+  result?: string | null
+  segments?: WhisperSegment[] | null
+}
+
+function textFromTranscribeResult(result: WhisperTranscribeResult): string {
   const direct = result.result?.trim() ?? ''
   if (direct.length > 0) return direct
   const fromSegments =
     result.segments
-      ?.map((s) => s.text)
+      ?.map((segment) => segment.text)
       .join('')
       .trim() ?? ''
   return fromSegments
@@ -57,6 +64,8 @@ async function resetAudioModeForPlayback(): Promise<void> {
   }
 }
 
+const MAX_RECORDING_MS = 15_000
+
 export function useRealtimeDictation(): RealtimeDictation {
   const whisper = useWhisperCtx()
   const { transcribeLanguage } = useTranscriptionLanguage()
@@ -68,6 +77,9 @@ export function useRealtimeDictation(): RealtimeDictation {
   const [dictState, setDictState] = useState<DictationState>('idle')
   const [transcript, setTranscript] = useState<string | null>(null)
   const [dictError, setDictError] = useState<string | null>(null)
+
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const stopRef = useRef<() => Promise<void>>(async () => {})
 
   const start = useCallback(async () => {
     if (whisper.status !== 'ready' || dictState !== 'idle') return
@@ -89,13 +101,17 @@ export function useRealtimeDictation(): RealtimeDictation {
         allowsRecording: true,
         playsInSilentMode: true,
         interruptionMode: 'duckOthers',
-        shouldPlayInBackground: false,
+        shouldPlayInBackground: true,
         shouldRouteThroughEarpiece: false,
       })
       await recorder.prepareToRecordAsync()
       recorder.record()
       setDictState('recording')
       haptic(() => Haptics.selectionAsync())
+      autoStopTimerRef.current = setTimeout(
+        () => void stopRef.current(),
+        MAX_RECORDING_MS
+      )
     } catch (e) {
       haptic(() =>
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
@@ -109,6 +125,10 @@ export function useRealtimeDictation(): RealtimeDictation {
   }, [whisper.status, dictState, recorder])
 
   const stop = useCallback(async () => {
+    if (autoStopTimerRef.current != null) {
+      clearTimeout(autoStopTimerRef.current)
+      autoStopTimerRef.current = null
+    }
     if (dictState !== 'recording') return
     if (whisper.status !== 'ready') {
       setDictState('idle')
@@ -160,7 +180,6 @@ export function useRealtimeDictation(): RealtimeDictation {
         setTranscript(null)
       } else {
         setTranscript(text)
-        await Clipboard.setStringAsync(text)
         haptic(() =>
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         )
@@ -181,6 +200,10 @@ export function useRealtimeDictation(): RealtimeDictation {
     setTranscript(null)
     setDictError(null)
   }, [])
+
+  useEffect(() => {
+    stopRef.current = stop
+  }, [stop])
 
   return { dictState, transcript, dictError, start, stop, clear }
 }

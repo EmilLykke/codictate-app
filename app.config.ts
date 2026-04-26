@@ -1,68 +1,81 @@
-import { ExpoConfig } from 'expo/config'
+import "tsx/cjs";
+import { ExpoConfig } from "expo/config";
+import withKeyboardExtension from "./plugins/withKeyboardExtension";
 
 const config: ExpoConfig = {
-  name: 'codictate-app',
-  slug: 'codictate-app',
-  version: '1.0.0',
-  orientation: 'portrait',
-  icon: './assets/images/icon.png',
-  scheme: 'codictateapp',
-  userInterfaceStyle: 'dark',
+  name: "codictate-app",
+  slug: "codictate-app",
+  version: "1.0.0",
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  scheme: "codictateapp",
+  userInterfaceStyle: "dark",
   ios: {
-    icon: './assets/expo.icon',
-    bundleIdentifier: 'com.emillo2003.codictate-app',
+    icon: "./assets/expo.icon",
+    bundleIdentifier: "com.emillo2003.codictate-app",
     infoPlist: {
       NSMicrophoneUsageDescription:
-        'Codictate uses the microphone to record your voice for on-device transcription.',
+        "Codictate uses the microphone to record your voice for on-device transcription.",
+      UIBackgroundModes: ["audio"],
+    },
+    entitlements: {
+      "com.apple.security.application-groups": [
+        "group.com.emillo2003.codictate-app",
+      ],
     },
   },
   android: {
     adaptiveIcon: {
-      backgroundColor: '#E6F4FE',
-      foregroundImage: './assets/images/android-icon-foreground.png',
-      backgroundImage: './assets/images/android-icon-background.png',
-      monochromeImage: './assets/images/android-icon-monochrome.png',
+      backgroundColor: "#E6F4FE",
+      foregroundImage: "./assets/images/android-icon-foreground.png",
+      backgroundImage: "./assets/images/android-icon-background.png",
+      monochromeImage: "./assets/images/android-icon-monochrome.png",
     },
     predictiveBackGestureEnabled: false,
   },
   web: {
-    output: 'static',
-    favicon: './assets/images/favicon.png',
+    output: "static",
+    favicon: "./assets/images/favicon.png",
   },
   plugins: [
-    'expo-router',
+    "expo-router",
     [
-      'expo-build-properties',
+      "expo-build-properties",
       {
         ios: {
-          deploymentTarget: '15.1',
+          deploymentTarget: "16.1",
         },
       },
     ],
     [
-      'expo-splash-screen',
+      "expo-widgets",
       {
-        backgroundColor: '#000000',
+        groupIdentifier: "group.com.emillo2003.codictate-app",
+      },
+    ],
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#000000",
         android: {
-          image: './assets/images/splash-icon.png',
+          image: "./assets/images/splash-icon.png",
           imageWidth: 76,
         },
       },
     ],
     [
-      'expo-audio',
+      "expo-audio",
       {
         microphonePermission:
-          'Codictate uses the microphone to record your voice for on-device transcription.',
+          "Codictate uses the microphone to record your voice for on-device transcription.",
       },
     ],
-    // whisper.rn uses auto-linking — no config plugin entry needed
   ],
-  assetBundlePatterns: ['assets/models/*'],
+  assetBundlePatterns: ["assets/models/*"],
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
   },
-}
+};
 
-export default config
+export default withKeyboardExtension(config);
