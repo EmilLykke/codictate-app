@@ -1,19 +1,18 @@
-import {
-  AudioModule,
-  RecordingPresets,
-  setAudioModeAsync,
-  useAudioRecorder,
-} from 'expo-audio'
-import { File } from 'expo-file-system'
-import * as Haptics from 'expo-haptics'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppState, type AppStateStatus } from 'react-native'
+import * as Haptics from 'expo-haptics'
 import {
-  WHISPER_MIN_RECORDING_BYTES,
-  WHISPER_RECORDING_OPTIONS,
-} from '@/constants/whisper-recording'
-import { useTranscriptionLanguage } from '@/hooks/settings/transcription-language-context'
-import { sanitizeWhisperTranscript } from '@/utils/whisper-transcript/sanitize-whisper-transcript'
-import { useWhisperCtx } from './use-whisper-ctx'
+  acknowledgeError,
+  cancel as nativeCancel,
+  consumeTranscript,
+  getState,
+  onError,
+  onStateChange,
+  onTranscript,
+  start as nativeStart,
+  stop as nativeStop,
+  type DictationPhase,
+} from 'codictate-dictation'
 
 export type DictationState = 'idle' | 'recording' | 'processing'
 
@@ -26,184 +25,133 @@ export type RealtimeDictation = {
   clear: () => void
 }
 
-type WhisperSegment = {
-  text: string
-}
-
-type WhisperTranscribeResult = {
-  result?: string | null
-  segments?: WhisperSegment[] | null
-}
-
-function textFromTranscribeResult(result: WhisperTranscribeResult): string {
-  const direct = result.result?.trim() ?? ''
-  if (direct.length > 0) return direct
-  const fromSegments =
-    result.segments
-      ?.map((segment) => segment.text)
-      .join('')
-      .trim() ?? ''
-  return fromSegments
+function viewStateForPhase(phase: DictationPhase): DictationState {
+  switch (phase) {
+    case 'start':
+    case 'recording':
+      return 'recording'
+    case 'stop_requested':
+    case 'processing':
+      return 'processing'
+    default:
+      return 'idle'
+  }
 }
 
 function haptic(fn: () => Promise<void>) {
   void fn().catch(() => {})
 }
 
-async function resetAudioModeForPlayback(): Promise<void> {
-  try {
-    await setAudioModeAsync({
-      allowsRecording: false,
-      playsInSilentMode: true,
-      interruptionMode: 'duckOthers',
-      shouldPlayInBackground: false,
-      shouldRouteThroughEarpiece: false,
-    })
-  } catch {
-    // ignore
-  }
-}
-
-const MAX_RECORDING_MS = 15_000
-
+/**
+ * Drives the native dictation coordinator (KeyboardHostRecorder) via the
+ * `codictate-dictation` Expo module. All recording + Whisper transcription runs
+ * natively, so the JS thread suspending in the background does NOT stop the session.
+ *
+ * Also flushes transcripts produced while JS was suspended (e.g. keyboard or
+ * Action Button started/finished a session) when the app foregrounds.
+ */
 export function useRealtimeDictation(): RealtimeDictation {
-  const whisper = useWhisperCtx()
-  const { transcribeLanguage } = useTranscriptionLanguage()
-  const recorder = useAudioRecorder(
-    process.env.EXPO_OS === 'ios'
-      ? WHISPER_RECORDING_OPTIONS
-      : RecordingPresets.HIGH_QUALITY
-  )
   const [dictState, setDictState] = useState<DictationState>('idle')
   const [transcript, setTranscript] = useState<string | null>(null)
   const [dictError, setDictError] = useState<string | null>(null)
 
-  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const stopRef = useRef<() => Promise<void>>(async () => {})
+  const lastAppStateRef = useRef<AppStateStatus>(AppState.currentState)
 
-  const start = useCallback(async () => {
-    if (whisper.status !== 'ready' || dictState !== 'idle') return
-
-    const { granted } = await AudioModule.requestRecordingPermissionsAsync()
-    if (!granted) {
-      haptic(() =>
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      )
-      setDictError('Microphone permission is required for dictation.')
-      return
-    }
-
-    setTranscript(null)
-    setDictError(null)
-
+  const flushPending = useCallback(async () => {
     try {
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        interruptionMode: 'duckOthers',
-        shouldPlayInBackground: true,
-        shouldRouteThroughEarpiece: false,
-      })
-      await recorder.prepareToRecordAsync()
-      recorder.record()
-      setDictState('recording')
-      haptic(() => Haptics.selectionAsync())
-      autoStopTimerRef.current = setTimeout(
-        () => void stopRef.current(),
-        MAX_RECORDING_MS
-      )
-    } catch (e) {
-      haptic(() =>
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      )
-      setDictError(
-        e instanceof Error ? e.message : 'Could not start recording.'
-      )
-      setDictState('idle')
-      await resetAudioModeForPlayback()
+      const text = await consumeTranscript()
+      if (text) setTranscript(text)
+      const snap = await getState()
+      setDictState(viewStateForPhase(snap.phase))
+      if (snap.phase === 'failed' && snap.error) {
+        setDictError(snap.error)
+        await acknowledgeError()
+      }
+    } catch {
+      // ignore
     }
-  }, [whisper.status, dictState, recorder])
+  }, [])
 
-  const stop = useCallback(async () => {
-    if (autoStopTimerRef.current != null) {
-      clearTimeout(autoStopTimerRef.current)
-      autoStopTimerRef.current = null
-    }
-    if (dictState !== 'recording') return
-    if (whisper.status !== 'ready') {
-      setDictState('idle')
-      return
-    }
+  // Initial sync — pick up any state set before the hook mounted (e.g. from keyboard).
+  useEffect(() => {
+    void flushPending()
+  }, [flushPending])
 
-    setDictState('processing')
-
-    try {
-      await recorder.stop()
-      const uri = recorder.uri ?? recorder.getStatus().url
-      if (!uri) {
-        throw new Error('No recording file was produced.')
+  // Re-sync when the app comes to the foreground. JS may have been suspended while
+  // a session completed; we need to flush the queued transcript.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const prev = lastAppStateRef.current
+      lastAppStateRef.current = next
+      if (prev !== 'active' && next === 'active') {
+        void flushPending()
       }
+    })
+    return () => sub.remove()
+  }, [flushPending])
 
-      const recorded = new File(uri)
-      if (!recorded.exists) {
-        throw new Error('Recording file is missing.')
+  // Subscribe to native events — covers the live (in-app, not suspended) path.
+  useEffect(() => {
+    const stateSub = onStateChange((event) => {
+      setDictState(viewStateForPhase(event.phase))
+      if (event.phase === 'failed' && event.error) {
+        setDictError(event.error)
+        void acknowledgeError().catch(() => {})
       }
-      if (recorded.size < WHISPER_MIN_RECORDING_BYTES) {
-        throw new Error(
-          'Recording is too short or empty — hold the button longer and speak.'
-        )
-      }
-
-      const { promise } = whisper.ctx.transcribe(uri, {
-        language: transcribeLanguage,
-      })
-      const transcription = await promise
-
-      if (transcription.isAborted) {
-        throw new Error('Transcription was interrupted.')
-      }
-
-      const text = sanitizeWhisperTranscript(
-        textFromTranscribeResult(transcription)
-      )
-      if (!text) {
-        const androidHint =
-          process.env.EXPO_OS === 'android'
-            ? ' (Android: recorder output may not be WAV yet — use iOS for reliable dictation.)'
-            : ''
-        haptic(() =>
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
-        )
-        setDictError(
-          `No speech detected. Try again, speak clearly, and record a few seconds.${androidHint}`
-        )
-        setTranscript(null)
-      } else {
-        setTranscript(text)
+    })
+    const transcriptSub = onTranscript((event) => {
+      if (event.transcript) {
+        setTranscript(event.transcript)
         haptic(() =>
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         )
       }
-    } catch (e) {
+    })
+    const errorSub = onError((event) => {
+      setDictError(event.message)
       haptic(() =>
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
       )
-      setDictError(e instanceof Error ? e.message : 'Transcription failed.')
-      setTranscript(null)
-    } finally {
-      setDictState('idle')
-      await resetAudioModeForPlayback()
+    })
+    return () => {
+      stateSub.remove()
+      transcriptSub.remove()
+      errorSub.remove()
     }
-  }, [dictState, recorder, whisper, transcribeLanguage])
+  }, [])
+
+  const start = useCallback(async () => {
+    setDictError(null)
+    setTranscript(null)
+    haptic(() => Haptics.selectionAsync())
+    try {
+      await nativeStart('host')
+    } catch (e) {
+      setDictError(
+        e instanceof Error ? e.message : 'Could not start recording.'
+      )
+      setDictState('idle')
+      haptic(() =>
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      )
+    }
+  }, [])
+
+  const stop = useCallback(async () => {
+    try {
+      await nativeStop()
+    } catch (e) {
+      setDictError(e instanceof Error ? e.message : 'Could not stop recording.')
+      // Best-effort: cancel the native session so we don't get stuck.
+      void nativeCancel().catch(() => {})
+      setDictState('idle')
+    }
+  }, [])
 
   const clear = useCallback(() => {
     setTranscript(null)
     setDictError(null)
   }, [])
-
-  useEffect(() => {
-    stopRef.current = stop
-  }, [stop])
 
   return { dictState, transcript, dictError, start, stop, clear }
 }

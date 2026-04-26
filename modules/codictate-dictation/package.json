@@ -1,0 +1,8 @@
+{
+  "name": "codictate-dictation",
+  "version": "0.0.1",
+  "description": "Native iOS dictation bridge — drives KeyboardHostRecorder from JS.",
+  "main": "index.ts",
+  "private": true,
+  "license": "UNLICENSED"
+}

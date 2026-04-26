@@ -49,6 +49,18 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         super.viewWillAppear(animated)
         if case .result = viewState { viewState = .idle }
         if case .error  = viewState { viewState = .idle }
+        // Sync local view state from App Group — a session may already be underway
+        // from another entry point (Action Button or previous keyboard tap).
+        let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+        switch activePhase {
+        case KbdSuite.phaseStart, KbdSuite.phaseRecording:
+            viewState = .recording
+        case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
+            viewState = .processing
+            startResultPolling()
+        default:
+            break
+        }
         startPhasePolling()
     }
 
@@ -61,13 +73,20 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     // MARK: DictationKeyboardViewDelegate
 
     func didTapDictate() {
-        switch viewState {
-        case .idle, .result, .error:
-            startHandoff()
-        case .recording:
+        // Source of truth is the App Group phase, not the keyboard's local viewState —
+        // a session may already be underway from a different entry point (Action Button
+        // or earlier keyboard tap that left the host app foregrounded). In that case the
+        // keyboard should *toggle stop*, never re-open the host app.
+        let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+        switch activePhase {
+        case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             requestStop()
+        case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
+            // Already on its way to a result — wait for ready, don't double-trigger.
+            viewState = .processing
+            startResultPolling()
         default:
-            break
+            startHandoff()
         }
     }
 
@@ -127,7 +146,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
     private func requestStop() {
         guard let suite else { return }
-        guard suite.string(forKey: KbdSuite.phaseKey) == KbdSuite.phaseRecording else {
+        let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+        // Allow stop from start (race: tapped before host began recording) or recording.
+        guard phase == KbdSuite.phaseRecording || phase == KbdSuite.phaseStart else {
             viewState = .error("Not recording yet.")
             return
         }

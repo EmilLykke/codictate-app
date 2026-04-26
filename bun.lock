@@ -11,6 +11,7 @@
         "@react-navigation/bottom-tabs": "^7.15.5",
         "@react-navigation/elements": "^2.9.10",
         "@react-navigation/native": "^7.1.33",
+        "codictate-dictation": "file:./modules/codictate-dictation",
         "expo": "~55.0.12",
         "expo-audio": "~55.0.13",
         "expo-build-properties": "~55.0.13",
@@ -664,6 +665,8 @@
     "cliui": ["cliui@8.0.1", "", { "dependencies": { "string-width": "^4.2.0", "strip-ansi": "^6.0.1", "wrap-ansi": "^7.0.0" } }, "sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ=="],
 
     "clone": ["clone@1.0.4", "", {}, "sha512-JQHZ2QMW6l3aH/j6xCqQThY/9OH4D/9ls34cgkUBiEeocRTU04tHfKPBsUK1PqZCUQM7GiA0IIXJSuXHI64Kbg=="],
+
+    "codictate-dictation": ["codictate-dictation@file:modules/codictate-dictation", {}],
 
     "color": ["color@4.2.3", "", { "dependencies": { "color-convert": "^2.0.1", "color-string": "^1.9.0" } }, "sha512-1rXeuUUiGGrykh+CeBdu5Ie7OJwinCgQY0bc7GCRxy5xVHy+moaqkpL/jqQq0MtQOeYcrqEz4abc5f0KtU7W4A=="],
 

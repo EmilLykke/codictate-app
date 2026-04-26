@@ -380,6 +380,12 @@ function syncKeyboardExtensionAndWireHostTranscription(
       hostSourceGroup,
       appUuid,
     );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      "codictateapp/DictationIntent.swift",
+      hostSourceGroup,
+      appUuid,
+    );
   } else {
     console.warn(
       "[withKeyboardExtension] Could not resolve host group for ModelManager.swift / WhisperBridge.mm.",
@@ -557,6 +563,17 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
           console.log(
             "[withKeyboardExtension] Patched AppDelegate for keyboard-record URL",
+          );
+        }
+
+        // Boot the dictation coordinator so JS module / App Intent can drive it via NotificationCenter.
+        if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
+          ad = ad.replace(
+            "    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
+            "    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
+          );
+          console.log(
+            "[withKeyboardExtension] Wired KeyboardHostRecorder.shared.bootstrap() into AppDelegate launch",
           );
         }
 
