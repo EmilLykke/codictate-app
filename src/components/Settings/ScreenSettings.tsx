@@ -7,6 +7,7 @@ import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
 import {
   Alert,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -53,6 +54,9 @@ const MODEL_USE: Record<string, string> = {
   base: 'In-app dictation',
   tiny: 'Keyboard extension',
 }
+
+const ACTION_BUTTON_SHORTCUT_URL =
+  'https://www.icloud.com/shortcuts/c1654e08dd004c469ae3175b880cd6f5'
 
 export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
@@ -114,6 +118,19 @@ export function ScreenSettings() {
     )
   }
 
+  const openActionButtonShortcut = async () => {
+    await Haptics.selectionAsync()
+    const canOpen = await Linking.canOpenURL(ACTION_BUTTON_SHORTCUT_URL)
+    if (!canOpen) {
+      Alert.alert(
+        'Unable to open Shortcut',
+        'Open the Shortcuts app and add the Codictate Dictation shortcut manually.'
+      )
+      return
+    }
+    await Linking.openURL(ACTION_BUTTON_SHORTCUT_URL)
+  }
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -122,34 +139,67 @@ export function ScreenSettings() {
       showsVerticalScrollIndicator={false}
     >
       {Platform.OS === 'ios' ? (
-        <SectionCard>
-          <Text style={styles.sectionLabel} selectable>
-            Dictation keyboard (iOS)
-          </Text>
-          <Text style={styles.hint} selectable>
-            Add <Text style={styles.stepsEm}>Codictate</Text> under Settings ›
-            General › Keyboard › Keyboards. It includes a normal QWERTY row for
-            typing. The microphone cannot run inside the extension: dictation
-            opens the main app to record, then transcribes on the device while
-            you switch back (background audio keeps the session alive).
-          </Text>
-          <Text style={styles.stepsList} selectable>
-            1. Enable the keyboard and{' '}
-            <Text style={styles.stepsEm}>Allow Full Access</Text>
-            {'\n'}
-            2. First tap: opens Codictate to start recording — return to your
-            app
-            {'\n'}
-            3. Second tap: stop; text is inserted into the field (also copied to
-            the clipboard). The small (Tiny) model in shared storage must be
-            present — open Codictate on Wi‑Fi once if the keyboard asks to
-            download it
-            {'\n'}
-            4. You can still dictate inside Codictate and use{' '}
-            <Text style={styles.stepsEm}>Copy</Text> /{' '}
-            <Text style={styles.stepsEm}>Share</Text> as before
-          </Text>
-        </SectionCard>
+        <>
+          <SectionCard>
+            <Text style={styles.sectionLabel} selectable>
+              Action Button shortcut
+            </Text>
+            <Text style={styles.hint} selectable>
+              Add the Codictate Dictation shortcut, then assign it to the iPhone
+              Action Button. It starts recording on the first press and copies
+              the transcript to the clipboard after the second press.
+            </Text>
+            <Pressable
+              onPress={() => void openActionButtonShortcut()}
+              style={({ pressed }) => [
+                styles.shortcutButton,
+                pressed ? styles.rowPressed : null,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Add Codictate Action Button shortcut"
+            >
+              <Image
+                source="sf:square.and.arrow.down"
+                style={styles.shortcutIcon}
+                contentFit="contain"
+                tintColor="#000000"
+              />
+              <Text style={styles.shortcutButtonText}>
+                Add Action Button Shortcut
+              </Text>
+            </Pressable>
+          </SectionCard>
+
+          <SectionCard>
+            <Text style={styles.sectionLabel} selectable>
+              Dictation keyboard (iOS)
+            </Text>
+            <Text style={styles.hint} selectable>
+              Add <Text style={styles.stepsEm}>Codictate</Text> under Settings ›
+              General › Keyboard › Keyboards. It includes a normal QWERTY row
+              for typing. The microphone cannot run inside the extension:
+              dictation opens the main app to record, then transcribes on the
+              device while you switch back (background audio keeps the session
+              alive).
+            </Text>
+            <Text style={styles.stepsList} selectable>
+              1. Enable the keyboard and{' '}
+              <Text style={styles.stepsEm}>Allow Full Access</Text>
+              {'\n'}
+              2. First tap: opens Codictate to start recording - return to your
+              app
+              {'\n'}
+              3. Second tap: stop; text is inserted into the field (also copied
+              to the clipboard). The small (Tiny) model in shared storage must
+              be present - open Codictate on Wi-Fi once if the keyboard asks to
+              download it
+              {'\n'}
+              4. You can still dictate inside Codictate and use{' '}
+              <Text style={styles.stepsEm}>Copy</Text> /{' '}
+              <Text style={styles.stepsEm}>Share</Text> as before
+            </Text>
+          </SectionCard>
+        </>
       ) : null}
 
       <SectionCard>
@@ -276,6 +326,27 @@ const styles = StyleSheet.create({
   },
   rowPressed: {
     opacity: 0.72,
+  },
+  shortcutButton: {
+    minHeight: 48,
+    borderRadius: 16,
+    borderCurve: 'continuous',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    backgroundColor: appColors.foreground,
+  },
+  shortcutIcon: {
+    width: 18,
+    height: 18,
+  },
+  shortcutButtonText: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#000000',
   },
   row: {
     flexDirection: 'row',

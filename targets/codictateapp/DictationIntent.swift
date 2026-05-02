@@ -21,12 +21,12 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     private static let darwinStart = "com.emillo2003.codictate.dictation.intent.start"
     private static let darwinStop = "com.emillo2003.codictate.dictation.intent.stop"
 
-    func perform() async throws -> some IntentResult {
+    func perform() async throws -> some IntentResult & ReturnsValue<String> {
         NSLog("[DictationIntent] perform() entry")
 
         guard let suite = UserDefaults(suiteName: Self.suiteName) else {
             NSLog("[DictationIntent] No App Group suite")
-            return .result()
+            return .result(value: "")
         }
         suite.synchronize()
         let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
@@ -38,9 +38,8 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
             suite.set("stop_requested", forKey: Self.phaseKey)
             suite.synchronize()
             postDarwin(Self.darwinStop)
-            await MainActor.run {
-                KeyboardHostRecorder.shared.requestStopFromIntent()
-            }
+            let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
+            return .result(value: transcript ?? "")
 
         case "stop_requested", "processing":
             NSLog("[DictationIntent] → already stopping/processing")
@@ -67,7 +66,7 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
             }
         }
 
-        return .result()
+        return .result(value: "")
     }
 
     private func postDarwin(_ name: String) {
@@ -86,10 +85,10 @@ struct StopDictationIntent: AppIntent {
     static var title: LocalizedStringResource = "Stop Codictate Dictation"
     static var openAppWhenRun: Bool = false
 
-    func perform() async throws -> some IntentResult {
+    func perform() async throws -> some IntentResult & ReturnsValue<String> {
         guard let suite = UserDefaults(
             suiteName: "group.com.emillo2003.codictate-app"
-        ) else { return .result() }
+        ) else { return .result(value: "") }
         suite.synchronize()
         let phase = suite.string(forKey: "kbdDictationPhase") ?? "idle"
         if phase == "recording" || phase == "start" {
@@ -100,11 +99,10 @@ struct StopDictationIntent: AppIntent {
                 CFNotificationName(rawValue: "com.emillo2003.codictate.dictation.intent.stop" as CFString),
                 nil, nil, true
             )
-            await MainActor.run {
-                KeyboardHostRecorder.shared.requestStopFromIntent()
-            }
+            let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
+            return .result(value: transcript ?? "")
         }
-        return .result()
+        return .result(value: "")
     }
 }
 

@@ -48,7 +48,7 @@ private final class KeyboardHostTranscription: NSObject {
         super.init()
     }
 
-    func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping () -> Void) {
+    func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         // Source-aware model pick: keyboard target stays on Tiny (memory-tight extension),
         // host / Action Button paths get Base for higher quality.
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
@@ -61,7 +61,7 @@ private final class KeyboardHostTranscription: NSObject {
             onProgress: { _ in },
             onComplete: { [weak self] result in
                 guard let self else {
-                    onComplete()
+                    onComplete(nil)
                     return
                 }
                 switch result {
@@ -70,25 +70,33 @@ private final class KeyboardHostTranscription: NSObject {
                         suite,
                         "Speech model: \(error.localizedDescription). Open Codictate once on Wi‑Fi to download the small model."
                     )
-                    onComplete()
+                    onComplete(nil)
                 case .success(let modelPath):
                     // Reload bridge whenever the path changes (variant switch). loadModelAtPath
                     // internally unloads the previous model, so this is safe to call repeatedly.
                     if !self.bridge.isLoaded || self.loadedModelPath != modelPath {
                         guard self.bridge.loadModel(atPath: modelPath) else {
                             KeyboardHostRecorder.shared.fail(suite, "Could not load the speech model.")
-                            onComplete()
+                            onComplete(nil)
                             return
                         }
                         self.loadedModelPath = modelPath
                     }
                     let lang = Self.currentWhisperLanguageTag()
                     self.bridge.transcribeWavFile(wavPath, language: lang) { transcript, errorMsg in
-                        defer { onComplete() }
                         if let text = transcript, !text.isEmpty {
-                            UIPasteboard.general.string = text
-                            suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
-                            suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
+                            let isIntentSession = source == KeyboardDictationBridge.sourceIntent
+                            if source != KeyboardDictationBridge.sourceKeyboard {
+                                Self.copyToClipboard(text)
+                            }
+
+                            if isIntentSession {
+                                suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+                                suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+                            } else {
+                                suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
+                                suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
+                            }
                             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
                             suite.synchronize()
                             KeyboardHostRecorder.reloadControlWidget()
@@ -106,17 +114,33 @@ private final class KeyboardHostTranscription: NSObject {
                             NotificationCenter.default.post(
                                 name: DictationNotification.stateChanged,
                                 object: nil,
-                                userInfo: ["phase": KeyboardDictationBridge.phaseReady]
+                                userInfo: [
+                                    "phase": isIntentSession
+                                        ? KeyboardDictationBridge.phaseIdle
+                                        : KeyboardDictationBridge.phaseReady
+                                ]
                             )
                             NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
+                            onComplete(text)
                         } else {
                             let msg = errorMsg ?? "No speech detected."
                             KeyboardHostRecorder.shared.fail(suite, msg)
+                            onComplete(nil)
                         }
                     }
                 }
             }
         )
+    }
+
+    private static func copyToClipboard(_ text: String) {
+        if Thread.isMainThread {
+            UIPasteboard.general.string = text
+        } else {
+            DispatchQueue.main.sync {
+                UIPasteboard.general.string = text
+            }
+        }
     }
 
     private static func currentWhisperLanguageTag() -> String? {
@@ -494,23 +518,43 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     /// Synchronous stop for App Intents.
-    func requestStopFromIntent() {
+    func requestStopFromIntent(completion: ((String?) -> Void)? = nil) {
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseRecording
            || phase == KeyboardDictationBridge.phaseStart
-           || phase == KeyboardDictationBridge.phaseStopRequested else { return }
+           || phase == KeyboardDictationBridge.phaseStopRequested else {
+            completion?(nil)
+            return
+        }
         if phase != KeyboardDictationBridge.phaseStopRequested {
             suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
             suite.synchronize()
         }
         if recorder == nil {
             resetPendingStartAfterStop(suite: suite)
+            completion?(nil)
             return
         }
         if let timer = pollTimer {
-            suitePollTick(suite: suite, timer: timer)
+            suitePollTick(suite: suite, timer: timer, completion: completion)
+        } else {
+            processStopRequested(suite: suite, completion: completion)
+        }
+    }
+
+    func requestStopAndWaitFromIntent() async -> String? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                self.requestStopFromIntent { transcript in
+                    continuation.resume(returning: transcript)
+                }
+            }
         }
     }
 
@@ -582,6 +626,8 @@ final class KeyboardHostRecorder: NSObject {
             // Trigger immediately rather than waiting for the next poll tick.
             if let timer = self.pollTimer {
                 self.suitePollTick(suite: suite, timer: timer)
+            } else {
+                self.processStopRequested(suite: suite, completion: nil)
             }
         }
     }
@@ -842,16 +888,25 @@ final class KeyboardHostRecorder: NSObject {
         RunLoop.main.add(pollTimer!, forMode: .common)
     }
 
-    private func suitePollTick(suite: UserDefaults, timer: Timer) {
+    private func suitePollTick(
+        suite: UserDefaults,
+        timer: Timer,
+        completion: ((String?) -> Void)? = nil
+    ) {
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseStopRequested else { return }
 
         timer.invalidate()
         pollTimer = nil
+        processStopRequested(suite: suite, completion: completion)
+    }
+
+    private func processStopRequested(suite: UserDefaults, completion: ((String?) -> Void)?) {
         cancelAutoStop()
 
         guard recorder != nil else {
             resetPendingStartAfterStop(suite: suite)
+            completion?(nil)
             return
         }
 
@@ -883,7 +938,9 @@ final class KeyboardHostRecorder: NSObject {
         let path = wavURL.path
         NSLog("[KeyboardHost] Stop requested; transcribing \(path)")
 
-        KeyboardHostTranscription.shared.transcribeWav(atPath: path, suite: suite) {}
+        KeyboardHostTranscription.shared.transcribeWav(atPath: path, suite: suite) { transcript in
+            completion?(transcript)
+        }
     }
 
     private func resetPendingStartAfterStop(suite: UserDefaults) {
