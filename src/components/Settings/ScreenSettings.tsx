@@ -50,17 +50,17 @@ function SectionCard({ children }: { children: ReactNode }) {
 }
 
 const MODEL_LABELS: Record<string, string> = {
-  base: 'Base (Q5_1)',
+  base: 'Base',
   small: 'Small (Q5_1)',
 }
 
 const MODEL_TAGLINE: Record<string, string> = {
-  base: 'Fastest · smallest (~57 MB)',
+  base: 'Fastest · smallest (~142 MB)',
   small: 'Good balance (~181 MB)',
 }
 
 const MODEL_SIZE_MB: Record<string, string> = {
-  base: '57',
+  base: '142',
   small: '181',
 }
 

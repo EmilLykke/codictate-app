@@ -28,7 +28,7 @@ Downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` int
 
 | Variant | File | Size |
 |---|---|---|
-| `base` | `ggml-base-q5_1.bin` | ~57 MB |
+| `base` | `ggml-base.bin` | ~142 MB |
 | `small` | `ggml-small-q5_1.bin` | ~181 MB |
 
 The keyboard extension always uses `base` (memory budget). The main app and Action Button use the user's preferred model.

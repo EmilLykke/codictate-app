@@ -3,7 +3,7 @@ import Foundation
 /// Downloads and locates Whisper GGML models in the App Group container.
 ///
 /// Two models available:
-///   • `base`  (~57 MB)  — Q5_1 quantized; always used for keyboard-source transcription
+///   • `base`  (~142 MB) — unquantized; always used for keyboard-source transcription
 ///   • `small` (~181 MB) — Q5_1 quantized; good balance of speed and quality
 ///
 /// Both download into the shared App Group so the keyboard extension can read them.
@@ -15,7 +15,7 @@ final class ModelManager {
 
         var filename: String {
             switch self {
-            case .base: return "ggml-base-q5_1.bin"
+            case .base: return "ggml-base.bin"
             case .small: return "ggml-small-q5_1.bin"
             }
         }
@@ -24,7 +24,7 @@ final class ModelManager {
             switch self {
             case .base:
                 return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
                 )!
             case .small:
                 return URL(string:
@@ -35,7 +35,7 @@ final class ModelManager {
 
         var minBytes: Int64 {
             switch self {
-            case .base: return 50 * 1024 * 1024
+            case .base: return 130 * 1024 * 1024
             case .small: return 160 * 1024 * 1024
             }
         }

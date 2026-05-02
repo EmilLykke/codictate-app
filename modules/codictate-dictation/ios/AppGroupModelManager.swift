@@ -11,7 +11,7 @@ final class AppGroupModelManager {
 
         var filename: String {
             switch self {
-            case .base: return "ggml-base-q5_1.bin"
+            case .base: return "ggml-base.bin"
             case .small: return "ggml-small-q5_1.bin"
             }
         }
@@ -20,7 +20,7 @@ final class AppGroupModelManager {
             switch self {
             case .base:
                 return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
                 )!
             case .small:
                 return URL(string:
@@ -31,7 +31,7 @@ final class AppGroupModelManager {
 
         var minBytes: Int64 {
             switch self {
-            case .base: return 50 * 1024 * 1024
+            case .base: return 130 * 1024 * 1024
             case .small: return 160 * 1024 * 1024
             }
         }
