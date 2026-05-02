@@ -121,10 +121,7 @@ function ensureAppDelegateRecorderImports(source: string): string {
     );
   }
   if (!/\bimport\s+WidgetKit\b/.test(out)) {
-    out = out.replace(
-      /import UIKit\n/,
-      "import UIKit\nimport WidgetKit\n",
-    );
+    out = out.replace(/import UIKit\n/, "import UIKit\nimport WidgetKit\n");
   }
   if (!/\bimport\s+ActivityKit\b/.test(out)) {
     out = out.replace(
@@ -206,6 +203,181 @@ function findWidgetExtensionTargetUuid(
     }
   }
   return undefined;
+}
+
+function findWidgetExtensionTargetUuids(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+): string[] {
+  const native = project.pbxNativeTargetSection() ?? {};
+  const uuids: string[] = [];
+  for (const key of Object.keys(native)) {
+    if (key.endsWith("_comment")) continue;
+    const t = native[key] as { name?: string } | undefined;
+    const name = (t?.name ?? "").replace(/^"|"$/g, "");
+    if (name === WIDGET_TARGET_NAME) {
+      uuids.push(key);
+    }
+  }
+  return uuids;
+}
+
+function removeWidgetTargetDuplicate(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+  targetUuid: string,
+): void {
+  const objects = project.hash.project.objects;
+  const native = project.pbxNativeTargetSection() ?? {};
+  const target = native[targetUuid] as
+    | {
+        buildConfigurationList?: string;
+        productReference?: string;
+      }
+    | undefined;
+  const productReference = target?.productReference?.replace(/^"|"$/g, "");
+
+  for (const key of Object.keys(objects.PBXProject ?? {})) {
+    if (key.endsWith("_comment")) continue;
+    const pbxProject = objects.PBXProject[key] as
+      | {
+          targets?: { value: string }[];
+          attributes?: { TargetAttributes?: Record<string, unknown> };
+        }
+      | undefined;
+    if (pbxProject?.targets) {
+      pbxProject.targets = pbxProject.targets.filter(
+        (entry) => entry.value !== targetUuid,
+      );
+    }
+    if (pbxProject?.attributes?.TargetAttributes) {
+      delete pbxProject.attributes.TargetAttributes[targetUuid];
+    }
+  }
+
+  const depSection = objects.PBXTargetDependency ?? {};
+  const removedDependencyUuids = new Set<string>();
+  for (const key of Object.keys(depSection)) {
+    if (key.endsWith("_comment")) continue;
+    const dep = depSection[key] as { target?: string } | undefined;
+    if (dep?.target === targetUuid) {
+      removedDependencyUuids.add(key);
+      delete depSection[key];
+      delete depSection[`${key}_comment`];
+    }
+  }
+
+  for (const key of Object.keys(native)) {
+    if (key.endsWith("_comment")) continue;
+    const current = native[key] as
+      | { dependencies?: { value: string }[] }
+      | undefined;
+    if (current?.dependencies) {
+      current.dependencies = current.dependencies.filter(
+        (entry) => !removedDependencyUuids.has(entry.value),
+      );
+    }
+  }
+
+  const proxySection = objects.PBXContainerItemProxy ?? {};
+  for (const key of Object.keys(proxySection)) {
+    if (key.endsWith("_comment")) continue;
+    const proxy = proxySection[key] as
+      | { remoteGlobalIDString?: string }
+      | undefined;
+    if (proxy?.remoteGlobalIDString === targetUuid) {
+      delete proxySection[key];
+      delete proxySection[`${key}_comment`];
+    }
+  }
+
+  if (productReference) {
+    const buildFiles = project.pbxBuildFileSection() ?? {};
+    const removedBuildFileUuids = new Set<string>();
+    for (const key of Object.keys(buildFiles)) {
+      if (key.endsWith("_comment")) continue;
+      const buildFile = buildFiles[key] as { fileRef?: string } | undefined;
+      if (buildFile?.fileRef === productReference) {
+        removedBuildFileUuids.add(key);
+        delete buildFiles[key];
+        delete buildFiles[`${key}_comment`];
+      }
+    }
+
+    for (const sectionName of [
+      "PBXCopyFilesBuildPhase",
+      "PBXSourcesBuildPhase",
+    ]) {
+      const section = objects[sectionName] ?? {};
+      for (const key of Object.keys(section)) {
+        if (key.endsWith("_comment")) continue;
+        const phase = section[key] as
+          | { files?: { value: string }[] }
+          | undefined;
+        if (phase?.files) {
+          phase.files = phase.files.filter(
+            (entry) => !removedBuildFileUuids.has(entry.value),
+          );
+        }
+      }
+    }
+
+    const groups = objects.PBXGroup ?? {};
+    for (const key of Object.keys(groups)) {
+      if (key.endsWith("_comment")) continue;
+      const group = groups[key] as
+        | { children?: { value: string }[] }
+        | undefined;
+      if (group?.children) {
+        group.children = group.children.filter(
+          (entry) => entry.value !== productReference,
+        );
+      }
+    }
+
+    const fileRefs = project.pbxFileReferenceSection?.() ?? {};
+    delete fileRefs[productReference];
+    delete fileRefs[`${productReference}_comment`];
+  }
+
+  if (target?.buildConfigurationList) {
+    const configLists = objects.XCConfigurationList ?? {};
+    const configList = configLists[target.buildConfigurationList] as
+      | { buildConfigurations?: { value: string }[] }
+      | undefined;
+    const configs = objects.XCBuildConfiguration ?? {};
+    for (const config of configList?.buildConfigurations ?? []) {
+      delete configs[config.value];
+      delete configs[`${config.value}_comment`];
+    }
+    delete configLists[target.buildConfigurationList];
+    delete configLists[`${target.buildConfigurationList}_comment`];
+  }
+
+  delete native[targetUuid];
+  delete native[`${targetUuid}_comment`];
+}
+
+function dedupeWidgetExtensionTargets(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+): void {
+  const widgetTargetUuids = findWidgetExtensionTargetUuids(project);
+  if (widgetTargetUuids.length <= 1) return;
+
+  const targetToKeep =
+    widgetTargetUuids.find((uuid) =>
+      findSourcesBuildPhaseForTarget(project, uuid),
+    ) ?? widgetTargetUuids[0];
+
+  for (const uuid of widgetTargetUuids) {
+    if (uuid !== targetToKeep) {
+      removeWidgetTargetDuplicate(project, uuid);
+      console.log(
+        `[withKeyboardExtension] Removed duplicate ${WIDGET_TARGET_NAME} target ${uuid}`,
+      );
+    }
+  }
 }
 
 function findWidgetExtensionGroupKey(
@@ -643,26 +815,31 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
         }
 
-        // Patch index.swift to register the DictationControlWidget in the WidgetBundle.
+        // Patch index.swift: replace the expo-widgets WidgetBundle with a native-only one.
+        // ExpoWidgets framework can crash the widget extension process (database mapping errors),
+        // preventing ALL ActivityConfigurations from registering. Our native widgets don't need it.
         const indexSwiftPath = path.join(widgetDestDir, "index.swift");
         if (fs.existsSync(indexSwiftPath)) {
-          let indexSwift = fs.readFileSync(indexSwiftPath, "utf8");
-          if (!indexSwift.includes("DictationControlWidget")) {
-            indexSwift = indexSwift.replace(
-              "WidgetLiveActivity()",
-              `WidgetLiveActivity()\n    if #available(iOS 18.0, *) {\n      DictationControlWidget()\n    }`,
-            );
-          }
-          // Register the native Live Activity widget.
-          if (!indexSwift.includes("DictationLiveActivityWidget")) {
-            indexSwift = indexSwift.replace(
-              "WidgetLiveActivity()",
-              `WidgetLiveActivity()\n    if #available(iOS 16.1, *) {\n      DictationLiveActivityWidget()\n    }`,
-            );
-          }
-          fs.writeFileSync(indexSwiftPath, indexSwift, "utf8");
+          const nativeBundle = [
+            "import WidgetKit",
+            "import SwiftUI",
+            "",
+            "@main",
+            "struct ExportWidgets0: WidgetBundle {",
+            "  var body: some Widget {",
+            "    if #available(iOS 16.1, *) {",
+            "      DictationLiveActivityWidget()",
+            "    }",
+            "    if #available(iOS 18.0, *) {",
+            "      DictationControlWidget()",
+            "    }",
+            "  }",
+            "}",
+            "",
+          ].join("\n");
+          fs.writeFileSync(indexSwiftPath, nativeBundle, "utf8");
           console.log(
-            "[withKeyboardExtension] Patched index.swift to register DictationControlWidget and DictationLiveActivityWidget",
+            "[withKeyboardExtension] Replaced index.swift with native-only WidgetBundle (removed ExpoWidgets dependency)",
           );
         }
       }
@@ -732,8 +909,46 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           }
         }
 
-        // Boot the dictation coordinator so JS module / App Intent can drive it via NotificationCenter.
-        if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
+        // Skip ALL Expo/RN init when cold-launched in background for AudioRecordingIntent.
+        // Guard both willFinish and didFinish — the crash may happen in either super chain.
+        if (!ad.includes("applicationState == .background")) {
+          // 1. Guard didFinishLaunchingWithOptions: skip RN bridge, window, and super call.
+          ad = ad.replace(
+            "  ) -> Bool {\n    let delegate = ReactNativeDelegate()",
+            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch — skipping React Native init")\n      return true\n    }\n    let delegate = ReactNativeDelegate()',
+          );
+          // Remove old bootstrap placement (before return super) to avoid duplicate
+          ad = ad.replace(
+            "\n    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(",
+            "\n    return super.application(",
+          );
+
+          // 2. Inject willFinishLaunchingWithOptions override before the class closing brace.
+          //    This fires BEFORE didFinish — catches crashes in the super chain even earlier.
+          if (!ad.includes("willFinishLaunchingWithOptions")) {
+            const willFinishMethod = [
+              "",
+              "  public override func application(",
+              "    _ application: UIApplication,",
+              "    willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil",
+              "  ) -> Bool {",
+              '    NSLog("[AppDelegate] willFinishLaunching state=\\(application.applicationState.rawValue)")',
+              "    if application.applicationState == .background { return true }",
+              "    return super.application(application, willFinishLaunchingWithOptions: launchOptions)",
+              "  }",
+              "",
+            ].join("\n");
+            const classEnd = ad.indexOf("\n}\n");
+            if (classEnd !== -1) {
+              ad =
+                ad.slice(0, classEnd) + willFinishMethod + ad.slice(classEnd);
+            }
+          }
+
+          console.log(
+            "[withKeyboardExtension] Added background launch guards (willFinish + didFinish) in AppDelegate",
+          );
+        } else if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
           ad = ad.replace(
             "    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
             "    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
@@ -900,6 +1115,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
   // silently did nothing).
   config = withXcodeProject(config, (c) => {
     const project = c.modResults;
+    dedupeWidgetExtensionTargets(project);
     ensureXcodeDependencyInfrastructure(project);
 
     const appTarget = project.getTarget("com.apple.product-type.application");
@@ -930,13 +1146,12 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
 
   config = withXcodeProject(config, (c) => {
     const project = c.modResults;
+    dedupeWidgetExtensionTargets(project);
     const widgetUuid = findWidgetExtensionTargetUuid(project);
     const widgetGroup = findWidgetExtensionGroupKey(project);
 
     if (widgetUuid && widgetGroup) {
-      const appTarget = project.getTarget(
-        "com.apple.product-type.application",
-      );
+      const appTarget = project.getTarget("com.apple.product-type.application");
       const appPhaseUuid = appTarget?.uuid
         ? findSourcesBuildPhaseForTarget(project, appTarget.uuid)
         : undefined;

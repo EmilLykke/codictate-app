@@ -1,36 +1,81 @@
+import ActivityKit
 import AppIntents
 import Foundation
 
 // MARK: - Toggle Intent (Action Button / Shortcuts)
 
 @available(iOS 18.0, *)
-struct DictationToggleIntent: AudioRecordingIntent {
+struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     static var title: LocalizedStringResource = "Toggle Codictate Dictation"
     static var description = IntentDescription(
         "Start or stop a Codictate dictation session."
     )
     static var openAppWhenRun: Bool = false
 
+    private static let suiteName = "group.com.emillo2003.codictate-app"
+    private static let phaseKey = "kbdDictationPhase"
+    private static let wavFileKey = "kbdDictationWavFile"
+    private static let sourceKey = "kbdDictationSource"
+    private static let errorKey = "kbdDictationHostError"
+    private static let transcriptKey = "kbdTranscript"
+    private static let darwinStart = "com.emillo2003.codictate.dictation.intent.start"
+    private static let darwinStop = "com.emillo2003.codictate.dictation.intent.stop"
+
     func perform() async throws -> some IntentResult {
-        let phase = KeyboardHostRecorder.shared.currentPhase()
-        NSLog("[DictationIntent] perform() phase=\(phase)")
+        NSLog("[DictationIntent] perform() entry")
+
+        guard let suite = UserDefaults(suiteName: Self.suiteName) else {
+            NSLog("[DictationIntent] No App Group suite")
+            return .result()
+        }
+        suite.synchronize()
+        let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
+        NSLog("[DictationIntent] phase=\(phase)")
 
         switch phase {
         case "start", "recording":
             NSLog("[DictationIntent] → stopping")
+            suite.set("stop_requested", forKey: Self.phaseKey)
+            suite.synchronize()
+            postDarwin(Self.darwinStop)
             await MainActor.run {
                 KeyboardHostRecorder.shared.requestStopFromIntent()
             }
+
         case "stop_requested", "processing":
             NSLog("[DictationIntent] → already stopping/processing")
+
         default:
             NSLog("[DictationIntent] → starting")
+
+            // 1. Write state to App Group (safe, no crash risk)
+            let filename = "intent-\(UUID().uuidString).wav"
+            suite.set("start", forKey: Self.phaseKey)
+            suite.set(filename, forKey: Self.wavFileKey)
+            suite.set("intent", forKey: Self.sourceKey)
+            suite.removeObject(forKey: Self.errorKey)
+            suite.removeObject(forKey: Self.transcriptKey)
+            suite.synchronize()
+
+            // 2. Post Darwin notification for host app
+            postDarwin(Self.darwinStart)
+
+            // 3. Start recording synchronously. The recorder starts/reuses the
+            // Live Activity before audio activation so the Dynamic Island is live immediately.
             await MainActor.run {
-                KeyboardHostRecorder.shared.startRecordingFromIntent()
+                KeyboardHostRecorder.shared.beginRecordingIfPending()
             }
         }
 
         return .result()
+    }
+
+    private func postDarwin(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(rawValue: name as CFString),
+            nil, nil, true
+        )
     }
 }
 
@@ -42,8 +87,19 @@ struct StopDictationIntent: AppIntent {
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult {
-        let phase = KeyboardHostRecorder.shared.currentPhase()
+        guard let suite = UserDefaults(
+            suiteName: "group.com.emillo2003.codictate-app"
+        ) else { return .result() }
+        suite.synchronize()
+        let phase = suite.string(forKey: "kbdDictationPhase") ?? "idle"
         if phase == "recording" || phase == "start" {
+            suite.set("stop_requested", forKey: "kbdDictationPhase")
+            suite.synchronize()
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName(rawValue: "com.emillo2003.codictate.dictation.intent.stop" as CFString),
+                nil, nil, true
+            )
             await MainActor.run {
                 KeyboardHostRecorder.shared.requestStopFromIntent()
             }

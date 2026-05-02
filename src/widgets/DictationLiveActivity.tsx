@@ -1,3 +1,5 @@
+// Expo widget scaffold only. The runtime Live Activity UI is the native Swift
+// widget in targets/widgets/DictationLiveActivityWidget.swift.
 import { HStack, Image, Text, VStack } from '@expo/ui/swift-ui'
 import { font, foregroundStyle, padding } from '@expo/ui/swift-ui/modifiers'
 import { createLiveActivity, type LiveActivityComponent } from 'expo-widgets'

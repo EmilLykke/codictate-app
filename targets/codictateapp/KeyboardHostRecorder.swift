@@ -138,12 +138,20 @@ final class DictationLiveActivityManager {
 
     private init() {}
 
-    func startRecording() {
-        endAllSync()
+    @discardableResult
+    func startRecording() -> Bool {
+        if let activity = trackedActivity() {
+            let now = Date()
+            currentActivityID = activity.id
+            recordingStartDate = now
+            update(activity, phase: KeyboardDictationBridge.phaseRecording, startDate: now)
+            NSLog("[LiveActivity] Reusing id=\(activity.id)")
+            return true
+        }
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             NSLog("[LiveActivity] Activities not enabled by user")
-            return
+            return false
         }
 
         let now = Date()
@@ -157,20 +165,23 @@ final class DictationLiveActivityManager {
             )
             currentActivityID = activity.id
             NSLog("[LiveActivity] Started id=\(activity.id)")
+            return true
         } catch {
             NSLog("[LiveActivity] Start failed: \(error)")
+            currentActivityID = nil
+            recordingStartDate = nil
+            return false
         }
     }
 
     func updateToProcessing() {
-        guard let id = currentActivityID,
-              let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id })
-        else { return }
+        guard let activity = trackedActivity() else { return }
 
         let state = DictationActivityAttributes.ContentState(
             phase: "processing",
             startDate: recordingStartDate ?? Date()
         )
+        currentActivityID = activity.id
         Task {
             await activity.update(ActivityContent(state: state, staleDate: nil))
             NSLog("[LiveActivity] Updated to processing")
@@ -178,28 +189,40 @@ final class DictationLiveActivityManager {
     }
 
     func end() {
-        guard let id = currentActivityID,
-              let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id })
-        else {
-            currentActivityID = nil
-            recordingStartDate = nil
-            return
+        let activitiesToEnd: [Activity<DictationActivityAttributes>]
+        if let activity = trackedActivity() {
+            activitiesToEnd = [activity]
+        } else {
+            activitiesToEnd = Activity<DictationActivityAttributes>.activities
         }
 
-        Task {
-            await activity.end(nil, dismissalPolicy: .immediate)
-            NSLog("[LiveActivity] Ended")
+        for activity in activitiesToEnd {
+            Task {
+                await activity.end(nil, dismissalPolicy: .immediate)
+                NSLog("[LiveActivity] Ended id=\(activity.id)")
+            }
         }
         currentActivityID = nil
         recordingStartDate = nil
     }
 
-    private func endAllSync() {
-        for activity in Activity<DictationActivityAttributes>.activities {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    private func trackedActivity() -> Activity<DictationActivityAttributes>? {
+        if let id = currentActivityID,
+           let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id }) {
+            return activity
         }
-        currentActivityID = nil
-        recordingStartDate = nil
+        return Activity<DictationActivityAttributes>.activities.first
+    }
+
+    private func update(
+        _ activity: Activity<DictationActivityAttributes>,
+        phase: String,
+        startDate: Date
+    ) {
+        let state = DictationActivityAttributes.ContentState(phase: phase, startDate: startDate)
+        Task {
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+        }
     }
 }
 
@@ -459,14 +482,33 @@ final class KeyboardHostRecorder: NSObject {
         beginRecording(suite: suite)
     }
 
+    /// Reads App Group state and begins recording if phase is "start".
+    /// Called by the intent after it has already written state to the App Group.
+    func beginRecordingIfPending() {
+        guard recorder == nil else { return }
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
+        guard phase == KeyboardDictationBridge.phaseStart else { return }
+        beginRecording(suite: suite)
+    }
+
     /// Synchronous stop for App Intents.
     func requestStopFromIntent() {
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseRecording
-           || phase == KeyboardDictationBridge.phaseStart else { return }
-        suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
-        suite.synchronize()
+           || phase == KeyboardDictationBridge.phaseStart
+           || phase == KeyboardDictationBridge.phaseStopRequested else { return }
+        if phase != KeyboardDictationBridge.phaseStopRequested {
+            suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
+            suite.synchronize()
+        }
+        if recorder == nil {
+            resetPendingStartAfterStop(suite: suite)
+            return
+        }
         if let timer = pollTimer {
             suitePollTick(suite: suite, timer: timer)
         }
@@ -524,11 +566,19 @@ final class KeyboardHostRecorder: NSObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+            suite.synchronize()
             let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
             guard phase == KeyboardDictationBridge.phaseRecording
-               || phase == KeyboardDictationBridge.phaseStart else { return }
-            suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
-            suite.synchronize()
+               || phase == KeyboardDictationBridge.phaseStart
+               || phase == KeyboardDictationBridge.phaseStopRequested else { return }
+            if phase != KeyboardDictationBridge.phaseStopRequested {
+                suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
+                suite.synchronize()
+            }
+            if self.recorder == nil {
+                self.resetPendingStartAfterStop(suite: suite)
+                return
+            }
             // Trigger immediately rather than waiting for the next poll tick.
             if let timer = self.pollTimer {
                 self.suitePollTick(suite: suite, timer: timer)
@@ -700,19 +750,34 @@ final class KeyboardHostRecorder: NSObject {
             return
         }
 
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+            ?? KeyboardDictationBridge.sourceHost
+        let isIntentStart = source == KeyboardDictationBridge.sourceIntent
+
+        if #available(iOS 16.2, *) {
+            let didStartLiveActivity = DictationLiveActivityManager.shared.startRecording()
+            if isIntentStart && !didStartLiveActivity {
+                fail(suite, "Could not start Live Activity for Action Button recording.")
+                return
+            }
+        } else if isIntentStart {
+            fail(suite, "Live Activity support is required for Action Button recording.")
+            return
+        }
+
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,
-                options: [.defaultToSpeaker, .allowBluetooth]
+                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
             )
             NSLog("[KeyboardHost] Audio session category set, activating...")
             try session.setActive(true, options: [])
             NSLog("[KeyboardHost] Audio session activated successfully")
-        } catch {
-            NSLog("[KeyboardHost] Audio session FAILED: \(error)")
-            fail(suite, "Audio session error: \(error.localizedDescription)")
+        } catch let error as NSError {
+            NSLog("[KeyboardHost] Audio session FAILED: domain=\(error.domain) code=\(error.code) \(error.localizedDescription)")
+            fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
             return
         }
 
@@ -741,10 +806,6 @@ final class KeyboardHostRecorder: NSObject {
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
         suite.synchronize()
         Self.reloadControlWidget()
-
-        if #available(iOS 16.2, *) {
-            DictationLiveActivityManager.shared.startRecording()
-        }
 
         NotificationCenter.default.post(
             name: DictationNotification.stateChanged,
@@ -789,6 +850,11 @@ final class KeyboardHostRecorder: NSObject {
         pollTimer = nil
         cancelAutoStop()
 
+        guard recorder != nil else {
+            resetPendingStartAfterStop(suite: suite)
+            return
+        }
+
         guard let wavURL = outputURL(suite: suite) else {
             fail(suite, "Recording file path missing.")
             return
@@ -818,5 +884,29 @@ final class KeyboardHostRecorder: NSObject {
         NSLog("[KeyboardHost] Stop requested; transcribing \(path)")
 
         KeyboardHostTranscription.shared.transcribeWav(atPath: path, suite: suite) {}
+    }
+
+    private func resetPendingStartAfterStop(suite: UserDefaults) {
+        cancelActivationWait()
+        pollTimer?.invalidate()
+        pollTimer = nil
+        cancelAutoStop()
+        recorder?.stop()
+        recorder = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+        suite.synchronize()
+        Self.reloadControlWidget()
+        if #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.end()
+        }
+        NotificationCenter.default.post(
+            name: DictationNotification.stateChanged,
+            object: nil,
+            userInfo: ["phase": KeyboardDictationBridge.phaseIdle]
+        )
+        NSLog("[KeyboardHost] Stop requested before recording; reset to idle")
     }
 }
