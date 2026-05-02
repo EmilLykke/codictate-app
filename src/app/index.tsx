@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native'
 import { Stack } from 'expo-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Animated from 'react-native-reanimated'
 import {
@@ -23,10 +23,6 @@ import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
 import { useNativeModel } from '@/hooks/whisper/use-native-model'
-import type { LiveActivity } from 'expo-widgets'
-import DictationLiveActivity, {
-  type DictationActivityProps,
-} from '@/widgets/DictationLiveActivity'
 
 export default function Index() {
   const model = useNativeModel()
@@ -68,26 +64,6 @@ function DictationScreen() {
 
   const isRecording = dictState === 'recording'
   const isProcessing = dictState === 'processing'
-
-  const activityRef = useRef<LiveActivity<DictationActivityProps> | null>(null)
-
-  useEffect(() => {
-    if (process.env.EXPO_OS !== 'ios') return
-    if (dictState === 'recording') {
-      try {
-        activityRef.current = DictationLiveActivity.start({
-          status: 'recording',
-        })
-      } catch {
-        activityRef.current = null
-      }
-    } else if (dictState === 'processing') {
-      void activityRef.current?.update({ status: 'processing' }).catch(() => {})
-    } else if (dictState === 'idle' && activityRef.current) {
-      void activityRef.current.end('default').catch(() => {})
-      activityRef.current = null
-    }
-  }, [dictState])
 
   const handleButtonPress = () => {
     if (isRecording) {

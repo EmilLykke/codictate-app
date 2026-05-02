@@ -1,5 +1,9 @@
 import { Iceberg_400Regular } from '@expo-google-fonts/iceberg'
 import { Iceland_400Regular } from '@expo-google-fonts/iceland'
+import {
+  getRecordingPermissionsAsync,
+  requestRecordingPermissionsAsync,
+} from 'expo-audio'
 import { useFonts } from 'expo-font'
 import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
@@ -21,6 +25,15 @@ export default function RootLayout() {
       SplashScreen.hideAsync()
     }
   }, [loaded, error])
+
+  useEffect(() => {
+    void (async () => {
+      const { granted, canAskAgain } = await getRecordingPermissionsAsync()
+      if (!granted && canAskAgain) {
+        await requestRecordingPermissionsAsync()
+      }
+    })()
+  }, [])
 
   if (!loaded && !error) {
     return null

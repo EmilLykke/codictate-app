@@ -1,6 +1,8 @@
+import ActivityKit
 import AVFoundation
 import Foundation
 import UIKit
+import WidgetKit
 
 /// App-group keys shared between every dictation entry point: keyboard extension,
 /// host-app JS bridge, and the App Intent (Action Button / Shortcuts).
@@ -89,6 +91,10 @@ private final class KeyboardHostTranscription: NSObject {
                             suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
                             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
                             suite.synchronize()
+                            KeyboardHostRecorder.reloadControlWidget()
+                            if #available(iOS 16.2, *) {
+                                DictationLiveActivityManager.shared.end()
+                            }
                             // Include source so the JS bridge knows whether to handle the
                             // transcript or leave it to the keyboard extension (which inserts
                             // via textDocumentProxy, avoiding double-paste inside this app).
@@ -119,6 +125,81 @@ private final class KeyboardHostTranscription: NSObject {
         } else {
             Locale.current.languageCode
         }
+    }
+}
+
+// MARK: - Live Activity Manager
+
+@available(iOS 16.2, *)
+final class DictationLiveActivityManager {
+    static let shared = DictationLiveActivityManager()
+    private var currentActivityID: String?
+    private var recordingStartDate: Date?
+
+    private init() {}
+
+    func startRecording() {
+        endAllSync()
+
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            NSLog("[LiveActivity] Activities not enabled by user")
+            return
+        }
+
+        let now = Date()
+        recordingStartDate = now
+        let state = DictationActivityAttributes.ContentState(phase: "recording", startDate: now)
+        do {
+            let activity = try Activity.request(
+                attributes: DictationActivityAttributes(),
+                content: .init(state: state, staleDate: nil),
+                pushType: nil
+            )
+            currentActivityID = activity.id
+            NSLog("[LiveActivity] Started id=\(activity.id)")
+        } catch {
+            NSLog("[LiveActivity] Start failed: \(error)")
+        }
+    }
+
+    func updateToProcessing() {
+        guard let id = currentActivityID,
+              let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id })
+        else { return }
+
+        let state = DictationActivityAttributes.ContentState(
+            phase: "processing",
+            startDate: recordingStartDate ?? Date()
+        )
+        Task {
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+            NSLog("[LiveActivity] Updated to processing")
+        }
+    }
+
+    func end() {
+        guard let id = currentActivityID,
+              let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id })
+        else {
+            currentActivityID = nil
+            recordingStartDate = nil
+            return
+        }
+
+        Task {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            NSLog("[LiveActivity] Ended")
+        }
+        currentActivityID = nil
+        recordingStartDate = nil
+    }
+
+    private func endAllSync() {
+        for activity in Activity<DictationActivityAttributes>.activities {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
+        currentActivityID = nil
+        recordingStartDate = nil
     }
 }
 
@@ -186,7 +267,47 @@ final class KeyboardHostRecorder: NSObject {
     /// Called from `application(_:didFinishLaunchingWithOptions:)` — already on the main thread.
     /// Installs observers synchronously so they are ready before `applicationDidBecomeActive` fires.
     func bootstrap() {
+        NSLog("[KeyboardHost] bootstrap() — installing observers")
         installNotificationObservers()
+        recoverStaleState()
+    }
+
+    /// Reset App Group phases left over from a previous crash or force-quit.
+    /// For "start", wait briefly in case a fresh intent just wrote it and the
+    /// Darwin notification hasn't fired yet.
+    private func recoverStaleState() {
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey)
+            ?? KeyboardDictationBridge.phaseIdle
+
+        switch phase {
+        case KeyboardDictationBridge.phaseStart:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, self.recorder == nil else { return }
+                guard let s = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+                s.synchronize()
+                let current = s.string(forKey: KeyboardDictationBridge.phaseKey)
+                    ?? KeyboardDictationBridge.phaseIdle
+                if current == KeyboardDictationBridge.phaseStart {
+                    let source = s.string(forKey: KeyboardDictationBridge.sourceKey)
+                        ?? KeyboardDictationBridge.sourceHost
+                    NSLog("[KeyboardHost] Recovering stale 'start' phase; attempting recording (source=\(source))")
+                    self.startSessionInternal(suite: s, source: source)
+                }
+            }
+        case KeyboardDictationBridge.phaseRecording,
+             KeyboardDictationBridge.phaseStopRequested,
+             KeyboardDictationBridge.phaseProcessing:
+            NSLog("[KeyboardHost] Stale phase '\(phase)' at bootstrap; resetting to idle.")
+            suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.synchronize()
+            Self.reloadControlWidget()
+        default:
+            break
+        }
     }
 
     private func installNotificationObservers() {
@@ -248,6 +369,7 @@ final class KeyboardHostRecorder: NSObject {
 
     @objc private func handleStartNotification(_ note: Notification) {
         let source = (note.userInfo?["source"] as? String) ?? KeyboardDictationBridge.sourceHost
+        NSLog("[KeyboardHost] handleStartNotification fired, source=\(source)")
         startSessionDirect(source: source)
     }
 
@@ -274,13 +396,13 @@ final class KeyboardHostRecorder: NSObject {
     // Received when the keyboard extension posts a Darwin start notification.
     // Fires even when Codictate is already in the foreground (unlike didBecomeActiveNotification).
     @objc private func handleDarwinStart() {
+        NSLog("[KeyboardHost] handleDarwinStart fired, recorder=\(recorder != nil)")
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
+        NSLog("[KeyboardHost] handleDarwinStart phase=\(phase)")
         guard phase == KeyboardDictationBridge.phaseStart else { return }
-        // Source written by the sender (keyboard or intent); fall back to host so Whisper
-        // uses the Base model rather than the smaller Tiny model reserved for the keyboard.
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
         startSessionInternal(suite: suite, source: source)
     }
@@ -299,7 +421,7 @@ final class KeyboardHostRecorder: NSObject {
         }
     }
 
-    /// Programmatic start (JS module / App Intent). Generates a filename and writes
+    /// Programmatic start (JS module). Generates a filename and writes
     /// pending state to App Group, then begins recording.
     func startSessionDirect(source: String) {
         DispatchQueue.main.async { [weak self] in
@@ -319,9 +441,43 @@ final class KeyboardHostRecorder: NSObject {
         }
     }
 
+    /// Synchronous recording start for App Intents. Bypasses async dispatch and
+    /// app-state gate because AudioRecordingIntent guarantees background execution.
+    /// Must be called on the main thread (via MainActor.run in the intent).
+    func startRecordingFromIntent() {
+        guard recorder == nil else { return }
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+
+        let filename = "intent-\(UUID().uuidString).wav"
+        suite.set(KeyboardDictationBridge.phaseStart, forKey: KeyboardDictationBridge.phaseKey)
+        suite.set(filename, forKey: KeyboardDictationBridge.wavFileKey)
+        suite.set(KeyboardDictationBridge.sourceIntent, forKey: KeyboardDictationBridge.sourceKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.synchronize()
+
+        beginRecording(suite: suite)
+    }
+
+    /// Synchronous stop for App Intents.
+    func requestStopFromIntent() {
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
+        guard phase == KeyboardDictationBridge.phaseRecording
+           || phase == KeyboardDictationBridge.phaseStart else { return }
+        suite.set(KeyboardDictationBridge.phaseStopRequested, forKey: KeyboardDictationBridge.phaseKey)
+        suite.synchronize()
+        if let timer = pollTimer {
+            suitePollTick(suite: suite, timer: timer)
+        }
+    }
+
     private func startSessionInternal(suite: UserDefaults, source: String) {
+        NSLog("[KeyboardHost] startSessionInternal source=\(source)")
         if #available(iOS 17.0, *) {
-            switch AVAudioApplication.shared.recordPermission {
+            let perm = AVAudioApplication.shared.recordPermission
+            NSLog("[KeyboardHost] mic permission=\(perm.rawValue) (0=undetermined, 1=denied, 2=granted)")
+            switch perm {
             case .denied:
                 fail(suite, "Microphone access denied. Enable Codictate in Settings › Privacy › Microphone.")
             case .undetermined:
@@ -395,6 +551,10 @@ final class KeyboardHostRecorder: NSObject {
             suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
             suite.synchronize()
+            Self.reloadControlWidget()
+            if #available(iOS 16.2, *) {
+                DictationLiveActivityManager.shared.end()
+            }
             NotificationCenter.default.post(
                 name: DictationNotification.stateChanged,
                 object: nil,
@@ -411,6 +571,16 @@ final class KeyboardHostRecorder: NSObject {
         return suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
     }
 
+    // MARK: - Control Widget
+
+    static func reloadControlWidget() {
+        if #available(iOS 18.0, *) {
+            ControlCenter.shared.reloadControls(
+                ofKind: "com.emillo2003.codictate.DictationControl"
+            )
+        }
+    }
+
     // MARK: - Failure
 
     fileprivate func fail(_ suite: UserDefaults, _ message: String) {
@@ -425,6 +595,10 @@ final class KeyboardHostRecorder: NSObject {
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
         suite.synchronize()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Self.reloadControlWidget()
+        if #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.end()
+        }
         NotificationCenter.default.post(
             name: DictationNotification.failed,
             object: nil,
@@ -465,18 +639,15 @@ final class KeyboardHostRecorder: NSObject {
             self.beginRecording(suite: suite)
         }
 
-        switch UIApplication.shared.applicationState {
+        let state = UIApplication.shared.applicationState
+        NSLog("[KeyboardHost] beginRecordingWhenActive appState=\(state.rawValue) (0=active, 1=inactive, 2=background)")
+
+        switch state {
         case .active:
-            // Foreground — start immediately.
             attemptStart()
         case .background:
-            // UIBackgroundModes:audio allows activating AVAudioSession and starting
-            // AVAudioRecorder without being in the foreground. beginRecording's error
-            // handling will call fail() if the session cannot be activated.
             attemptStart()
         case .inactive:
-            // App is mid-transition (e.g. being brought to foreground by the URL scheme).
-            // Wait for the active state to avoid racing with the audio session setup.
             activationObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.didBecomeActiveNotification,
                 object: nil,
@@ -523,6 +694,7 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     private func beginRecording(suite: UserDefaults) {
+        NSLog("[KeyboardHost] beginRecording called")
         guard let url = outputURL(suite: suite) else {
             fail(suite, "Could not create recording path (App Group missing?).")
             return
@@ -530,17 +702,16 @@ final class KeyboardHostRecorder: NSObject {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            // Do NOT call setActive(false, notifyOthersOnDeactivation) here.
-            // From background, that deactivates the session and lets other apps resume;
-            // iOS then refuses to give it back to a backgrounded app. Configure and
-            // activate directly — the UIBackgroundModes:audio entitlement allows this.
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,
                 options: [.defaultToSpeaker, .allowBluetooth]
             )
+            NSLog("[KeyboardHost] Audio session category set, activating...")
             try session.setActive(true, options: [])
+            NSLog("[KeyboardHost] Audio session activated successfully")
         } catch {
+            NSLog("[KeyboardHost] Audio session FAILED: \(error)")
             fail(suite, "Audio session error: \(error.localizedDescription)")
             return
         }
@@ -569,6 +740,11 @@ final class KeyboardHostRecorder: NSObject {
         suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
         suite.synchronize()
+        Self.reloadControlWidget()
+
+        if #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.startRecording()
+        }
 
         NotificationCenter.default.post(
             name: DictationNotification.stateChanged,
@@ -626,6 +802,11 @@ final class KeyboardHostRecorder: NSObject {
         suite.set(KeyboardDictationBridge.phaseProcessing, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
         suite.synchronize()
+        Self.reloadControlWidget()
+
+        if #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.updateToProcessing()
+        }
 
         NotificationCenter.default.post(
             name: DictationNotification.stateChanged,

@@ -48,6 +48,9 @@ const REMOVED_FROM_EXTENSION_SOURCES = [
 const HOST_SWIFT_DIR = "codictateapp";
 const HOST_RECORDER_FILE = "KeyboardHostRecorder.swift";
 
+const WIDGET_TARGET_NAME = "ExpoWidgetsTarget";
+const CONTROL_WIDGET_FILE = "DictationControl.swift";
+
 const RNWHISPER_XCFRAMEWORK =
   "../node_modules/whisper.rn/ios/rnwhisper.xcframework";
 
@@ -117,6 +120,18 @@ function ensureAppDelegateRecorderImports(source: string): string {
       "import AVFoundation\nimport UIKit\n",
     );
   }
+  if (!/\bimport\s+WidgetKit\b/.test(out)) {
+    out = out.replace(
+      /import UIKit\n/,
+      "import UIKit\nimport WidgetKit\n",
+    );
+  }
+  if (!/\bimport\s+ActivityKit\b/.test(out)) {
+    out = out.replace(
+      /import WidgetKit\n/,
+      "import WidgetKit\nimport ActivityKit\n",
+    );
+  }
   return out;
 }
 
@@ -172,6 +187,58 @@ function ensureXcodeDependencyInfrastructure(
   const o = project.hash.project.objects;
   if (!o.PBXTargetDependency) o.PBXTargetDependency = Object.create(null);
   if (!o.PBXContainerItemProxy) o.PBXContainerItemProxy = Object.create(null);
+}
+
+function findWidgetExtensionTargetUuid(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+): string | undefined {
+  const native = project.pbxNativeTargetSection() ?? {};
+  for (const key of Object.keys(native)) {
+    if (key.endsWith("_comment")) continue;
+    const t = native[key] as {
+      name?: string;
+      productType?: string;
+    };
+    const name = (t?.name ?? "").replace(/^"|"$/g, "");
+    if (name === WIDGET_TARGET_NAME) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+function findWidgetExtensionGroupKey(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+): string | undefined {
+  const groups = getPbxGroupObjects(project);
+  for (const key of Object.keys(groups)) {
+    if (key.endsWith("_comment")) continue;
+    const g = groups[key] as { path?: string };
+    const p = (g.path ?? "").replace(/^"|"$/g, "");
+    if (p === WIDGET_TARGET_NAME) return key;
+  }
+  return project.findPBXGroupKey({ name: WIDGET_TARGET_NAME });
+}
+
+/** Find the PBXSourcesBuildPhase UUID belonging to a specific native target. */
+function findSourcesBuildPhaseForTarget(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+  targetUuid: string,
+): string | undefined {
+  const native = project.pbxNativeTargetSection() ?? {};
+  const target = native[targetUuid] as {
+    buildPhases?: { value: string; comment?: string }[];
+  };
+  if (!target?.buildPhases) return undefined;
+  const sourcesSection =
+    project.hash?.project?.objects?.PBXSourcesBuildPhase ?? {};
+  for (const phase of target.buildPhases) {
+    if (sourcesSection[phase.value]) return phase.value;
+  }
+  return undefined;
 }
 
 function findKeyboardExtensionTargetUuid(
@@ -386,6 +453,12 @@ function syncKeyboardExtensionAndWireHostTranscription(
       hostSourceGroup,
       appUuid,
     );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      "codictateapp/DictationActivityAttributes.swift",
+      hostSourceGroup,
+      appUuid,
+    );
   } else {
     console.warn(
       "[withKeyboardExtension] Could not resolve host group for ModelManager.swift / WhisperBridge.mm.",
@@ -475,40 +548,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         `[withKeyboardExtension] Copied ${EXT_NAME} sources to ios/${EXT_NAME}/`,
       );
 
-      const hostDestEarly = path.join(
-        c.modRequest.platformProjectRoot,
-        HOST_SWIFT_DIR,
-      );
-      const whisperSrcPath = path.join(destDir, "WhisperBridge.h");
-      if (fs.existsSync(whisperSrcPath)) {
-        fs.mkdirSync(hostDestEarly, { recursive: true });
-        const whisperDest = path.join(hostDestEarly, "WhisperBridge.h");
-        fs.copyFileSync(whisperSrcPath, whisperDest);
-        const whisperMmSrc = path.join(destDir, "WhisperBridge.mm");
-        if (fs.existsSync(whisperMmSrc)) {
-          fs.copyFileSync(
-            whisperMmSrc,
-            path.join(hostDestEarly, "WhisperBridge.mm"),
-          );
-        }
-        // Expo pins SWIFT_OBJC_BRIDGING_HEADER to codictateapp-Bridging-Header.h — import Whisper there.
-        const expoBridgingPath = path.join(
-          hostDestEarly,
-          "codictateapp-Bridging-Header.h",
-        );
-        if (fs.existsSync(expoBridgingPath)) {
-          let bridging = fs.readFileSync(expoBridgingPath, "utf8");
-          if (!/WhisperBridge\.h/.test(bridging)) {
-            bridging = `${bridging.trimEnd()}\n\n#import "WhisperBridge.h"\n`;
-            fs.writeFileSync(expoBridgingPath, bridging, "utf8");
-            console.log(
-              `[withKeyboardExtension] Patched codictateapp-Bridging-Header.h for WhisperBridge`,
-            );
-          }
-        }
-      }
-
-      // Main-app helper: microphone recording for the keyboard (extension → app handoff).
+      // Main-app helper: native sources for recording, transcription, and App Intent.
       const hostSrcDir = path.join(
         c.modRequest.projectRoot,
         "targets",
@@ -521,7 +561,11 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       if (fs.existsSync(hostSrcDir)) {
         fs.mkdirSync(hostDestDir, { recursive: true });
         for (const file of fs.readdirSync(hostSrcDir)) {
-          if (!file.endsWith(".swift")) continue;
+          const isSource =
+            file.endsWith(".swift") ||
+            file.endsWith(".h") ||
+            file.endsWith(".mm");
+          if (!isSource) continue;
           if (file === HOST_RECORDER_FILE) continue;
           fs.copyFileSync(
             path.join(hostSrcDir, file),
@@ -529,8 +573,98 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
         }
         console.log(
-          `[withKeyboardExtension] Copied ${HOST_SWIFT_DIR}/*.swift (except ${HOST_RECORDER_FILE}) → ios/${HOST_SWIFT_DIR}/`,
+          `[withKeyboardExtension] Copied ${HOST_SWIFT_DIR} sources (except ${HOST_RECORDER_FILE}) → ios/${HOST_SWIFT_DIR}/`,
         );
+      }
+
+      // Expo pins SWIFT_OBJC_BRIDGING_HEADER to codictateapp-Bridging-Header.h — import Whisper there.
+      const expoBridgingPath = path.join(
+        hostDestDir,
+        "codictateapp-Bridging-Header.h",
+      );
+      if (fs.existsSync(expoBridgingPath)) {
+        let bridging = fs.readFileSync(expoBridgingPath, "utf8");
+        if (!/WhisperBridge\.h/.test(bridging)) {
+          bridging = `${bridging.trimEnd()}\n\n#import "WhisperBridge.h"\n`;
+          fs.writeFileSync(expoBridgingPath, bridging, "utf8");
+          console.log(
+            `[withKeyboardExtension] Patched codictateapp-Bridging-Header.h for WhisperBridge`,
+          );
+        }
+      }
+
+      // Control Widget: copy DictationControl.swift into the widget extension target.
+      const widgetSrcDir = path.join(
+        c.modRequest.projectRoot,
+        "targets",
+        "widgets",
+      );
+      const widgetDestDir = path.join(
+        c.modRequest.platformProjectRoot,
+        WIDGET_TARGET_NAME,
+      );
+      if (fs.existsSync(widgetSrcDir) && fs.existsSync(widgetDestDir)) {
+        const controlSrc = path.join(widgetSrcDir, CONTROL_WIDGET_FILE);
+        if (fs.existsSync(controlSrc)) {
+          fs.copyFileSync(
+            controlSrc,
+            path.join(widgetDestDir, CONTROL_WIDGET_FILE),
+          );
+          console.log(
+            `[withKeyboardExtension] Copied ${CONTROL_WIDGET_FILE} → ios/${WIDGET_TARGET_NAME}/`,
+          );
+        }
+
+        // Live Activity widget: copy the SwiftUI Live Activity view.
+        const liveActivityWidgetFile = "DictationLiveActivityWidget.swift";
+        const liveActivitySrc = path.join(widgetSrcDir, liveActivityWidgetFile);
+        if (fs.existsSync(liveActivitySrc)) {
+          fs.copyFileSync(
+            liveActivitySrc,
+            path.join(widgetDestDir, liveActivityWidgetFile),
+          );
+          console.log(
+            `[withKeyboardExtension] Copied ${liveActivityWidgetFile} → ios/${WIDGET_TARGET_NAME}/`,
+          );
+        }
+
+        // Shared ActivityAttributes: copy into widget extension so it compiles in both targets.
+        const attrsFile = "DictationActivityAttributes.swift";
+        const attrsSrc = path.join(
+          c.modRequest.projectRoot,
+          "targets",
+          HOST_SWIFT_DIR,
+          attrsFile,
+        );
+        if (fs.existsSync(attrsSrc)) {
+          fs.copyFileSync(attrsSrc, path.join(widgetDestDir, attrsFile));
+          console.log(
+            `[withKeyboardExtension] Copied ${attrsFile} → ios/${WIDGET_TARGET_NAME}/`,
+          );
+        }
+
+        // Patch index.swift to register the DictationControlWidget in the WidgetBundle.
+        const indexSwiftPath = path.join(widgetDestDir, "index.swift");
+        if (fs.existsSync(indexSwiftPath)) {
+          let indexSwift = fs.readFileSync(indexSwiftPath, "utf8");
+          if (!indexSwift.includes("DictationControlWidget")) {
+            indexSwift = indexSwift.replace(
+              "WidgetLiveActivity()",
+              `WidgetLiveActivity()\n    if #available(iOS 18.0, *) {\n      DictationControlWidget()\n    }`,
+            );
+          }
+          // Register the native Live Activity widget.
+          if (!indexSwift.includes("DictationLiveActivityWidget")) {
+            indexSwift = indexSwift.replace(
+              "WidgetLiveActivity()",
+              `WidgetLiveActivity()\n    if #available(iOS 16.1, *) {\n      DictationLiveActivityWidget()\n    }`,
+            );
+          }
+          fs.writeFileSync(indexSwiftPath, indexSwift, "utf8");
+          console.log(
+            "[withKeyboardExtension] Patched index.swift to register DictationControlWidget and DictationLiveActivityWidget",
+          );
+        }
       }
 
       const recorderSrcPath = path.join(hostSrcDir, HOST_RECORDER_FILE);
@@ -777,6 +911,166 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         project.addTargetDependency(appTarget.uuid, [extUuid]);
       } catch {
         // Rare: malformed project graph — run `npx expo prebuild --platform ios`.
+      }
+    }
+
+    return c;
+  });
+
+  // Add widget-only Swift files to the widget extension's Sources build phase.
+  // addSourceFile() defaults to the main app's Sources phase, so we must move
+  // each file out of the main app and into the widget extension explicitly.
+  // DictationActivityAttributes.swift is NOT widget-only — it compiles in both
+  // targets (the main app needs it for ActivityKit calls in KeyboardHostRecorder).
+  const WIDGET_ONLY_FILES = [
+    CONTROL_WIDGET_FILE,
+    "DictationLiveActivityWidget.swift",
+  ];
+  const WIDGET_SHARED_FILES = ["DictationActivityAttributes.swift"];
+
+  config = withXcodeProject(config, (c) => {
+    const project = c.modResults;
+    const widgetUuid = findWidgetExtensionTargetUuid(project);
+    const widgetGroup = findWidgetExtensionGroupKey(project);
+
+    if (widgetUuid && widgetGroup) {
+      const appTarget = project.getTarget(
+        "com.apple.product-type.application",
+      );
+      const appPhaseUuid = appTarget?.uuid
+        ? findSourcesBuildPhaseForTarget(project, appTarget.uuid)
+        : undefined;
+
+      for (const filename of WIDGET_ONLY_FILES) {
+        project.addSourceFile(filename, {}, widgetGroup);
+
+        const fileRefUuid = findFileRefUuidForPath(project, filename);
+        if (!fileRefUuid) continue;
+
+        // Remove from main app Sources (addSourceFile wrongly put it there).
+        if (appPhaseUuid) {
+          const sourcesSection =
+            project.hash.project.objects.PBXSourcesBuildPhase;
+          const appPhase = sourcesSection[appPhaseUuid];
+          if (appPhase?.files) {
+            const buildFiles = project.pbxBuildFileSection() ?? {};
+            appPhase.files = appPhase.files.filter(
+              (entry: { value: string }) => {
+                const bf = buildFiles[entry.value] as
+                  | { fileRef?: string }
+                  | undefined;
+                return bf?.fileRef !== fileRefUuid;
+              },
+            );
+          }
+        }
+
+        // Add to widget target's Sources build phase.
+        const widgetPhaseUuid = findSourcesBuildPhaseForTarget(
+          project,
+          widgetUuid,
+        );
+        if (widgetPhaseUuid) {
+          const sourcesSection =
+            project.hash.project.objects.PBXSourcesBuildPhase;
+          const widgetPhase = sourcesSection[widgetPhaseUuid];
+          if (widgetPhase?.files) {
+            const buildFiles = project.pbxBuildFileSection() ?? {};
+            const alreadyInWidget = widgetPhase.files.some(
+              (entry: { value: string }) => {
+                const bf = buildFiles[entry.value] as
+                  | { fileRef?: string }
+                  | undefined;
+                return bf?.fileRef === fileRefUuid;
+              },
+            );
+            if (!alreadyInWidget) {
+              const uuid = project.generateUuid();
+              project.addToPbxBuildFileSection({
+                uuid,
+                fileRef: fileRefUuid,
+                basename: filename,
+                target: widgetUuid,
+              });
+              widgetPhase.files.push({
+                value: uuid,
+                comment: `${filename} in Sources`,
+              });
+            }
+          }
+        }
+
+        console.log(
+          `[withKeyboardExtension] Added ${filename} to ${WIDGET_TARGET_NAME} Sources (widget-only)`,
+        );
+      }
+
+      // Files compiled in both the main app AND the widget extension.
+      // The main app already has its own copy (codictateapp/X.swift) wired via
+      // ensureSourceFileBuiltByMainAppTarget. Here we add the ExpoWidgetsTarget
+      // copy to the widget extension only. addSourceFile() wrongly puts it into
+      // the main app Sources too, so we strip that duplicate.
+      for (const filename of WIDGET_SHARED_FILES) {
+        project.addSourceFile(filename, {}, widgetGroup);
+
+        const fileRefUuid = findFileRefUuidForPath(project, filename);
+        if (!fileRefUuid) continue;
+
+        // Remove from main app Sources (addSourceFile wrongly put it there).
+        if (appPhaseUuid) {
+          const sourcesSection =
+            project.hash.project.objects.PBXSourcesBuildPhase;
+          const appPhase = sourcesSection[appPhaseUuid];
+          if (appPhase?.files) {
+            const buildFiles = project.pbxBuildFileSection() ?? {};
+            appPhase.files = appPhase.files.filter(
+              (entry: { value: string }) => {
+                const bf = buildFiles[entry.value] as
+                  | { fileRef?: string }
+                  | undefined;
+                return bf?.fileRef !== fileRefUuid;
+              },
+            );
+          }
+        }
+
+        const widgetPhaseUuid = findSourcesBuildPhaseForTarget(
+          project,
+          widgetUuid,
+        );
+        if (widgetPhaseUuid) {
+          const sourcesSection =
+            project.hash.project.objects.PBXSourcesBuildPhase;
+          const widgetPhase = sourcesSection[widgetPhaseUuid];
+          if (widgetPhase?.files) {
+            const buildFiles = project.pbxBuildFileSection() ?? {};
+            const alreadyInWidget = widgetPhase.files.some(
+              (entry: { value: string }) => {
+                const bf = buildFiles[entry.value] as
+                  | { fileRef?: string }
+                  | undefined;
+                return bf?.fileRef === fileRefUuid;
+              },
+            );
+            if (!alreadyInWidget) {
+              const uuid = project.generateUuid();
+              project.addToPbxBuildFileSection({
+                uuid,
+                fileRef: fileRefUuid,
+                basename: filename,
+                target: widgetUuid,
+              });
+              widgetPhase.files.push({
+                value: uuid,
+                comment: `${filename} in Sources`,
+              });
+            }
+          }
+        }
+
+        console.log(
+          `[withKeyboardExtension] Added ${filename} to ${WIDGET_TARGET_NAME} Sources (shared with main app)`,
+        );
       }
     }
 

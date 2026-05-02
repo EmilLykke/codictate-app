@@ -59,12 +59,15 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         // Sync local view state from App Group — a session may already be underway
         // from another entry point (Action Button or previous keyboard tap).
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+        let keyboardOwned = suite.map { isKeyboardSession($0) } ?? false
         switch activePhase {
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             viewState = .recording
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            viewState = .processing
-            startResultPolling()
+            if keyboardOwned {
+                viewState = .processing
+                startResultPolling()
+            }
         default:
             break
         }
@@ -182,6 +185,10 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         )
     }
 
+    private func isKeyboardSession(_ suite: UserDefaults) -> Bool {
+        (suite.string(forKey: KbdSuite.sourceKey) ?? "") == KbdSuite.sourceKeyboard
+    }
+
     // MARK: Phase polling
 
     private func startPhasePolling() {
@@ -210,11 +217,16 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             case KbdSuite.phaseStart, KbdSuite.phaseRecording:
                 viewState = .recording
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-                viewState = .processing
-                startResultPolling()
+                if isKeyboardSession(suite) {
+                    viewState = .processing
+                    startResultPolling()
+                }
             case KbdSuite.phaseReady:
-                // Start + stop both happened before keyboard noticed — go straight to polling.
-                startResultPolling()
+                // Only auto-insert if this was a keyboard-initiated session.
+                // Action Button / in-app sessions go to the clipboard instead.
+                if isKeyboardSession(suite) {
+                    startResultPolling()
+                }
             default:
                 break
             }
