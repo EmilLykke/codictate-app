@@ -17,58 +17,47 @@ protocol DictationKeyboardViewDelegate: AnyObject {
     func didInsertText(_ text: String)
     func didTapBackspace()
     func didTapDismiss()
+    func didTapNextKeyboard()
 }
 
-// MARK: - GlassKey
+// MARK: - KeyboardKey
 
-private final class GlassKey: UIControl {
+private final class KeyboardKey: UIControl {
 
     let contentLabel = UILabel()
     let contentIcon  = UIImageView()
 
-    private let blurView: UIVisualEffectView
-    private let tintOverlay    = UIView()   // dark-mode brightness layer (inside blur)
-    private let recordingLayer = UIView()   // vivid fill for recording state (above blur)
-    private let isSpecial: Bool
+    private let backgroundLayer = UIView()
+    private let recordingLayer = UIView()
+    private let style: KeyStyle
+    private var isSelectedKey = false
 
-    init(special: Bool = false) {
-        self.isSpecial = special
-        if #available(iOS 26.0, *) {
-            blurView = UIVisualEffectView(effect: UIGlassEffect())
-        } else {
-            let style: UIBlurEffect.Style = special ? .systemMaterial : .systemUltraThinMaterial
-            blurView = UIVisualEffectView(effect: UIBlurEffect(style: style))
-        }
+    enum KeyStyle {
+        case letter
+        case special
+        case space
+        case accent
+    }
+
+    init(style: KeyStyle = .letter) {
+        self.style = style
         super.init(frame: .zero)
 
-        // ── Blur background ──────────────────────────────────────────────
-        blurView.isUserInteractionEnabled = false
-        blurView.layer.cornerRadius = 9
-        blurView.layer.cornerCurve  = .continuous
-        blurView.clipsToBounds = true
-        blurView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(blurView)
+        backgroundLayer.isUserInteractionEnabled = false
+        backgroundLayer.layer.cornerRadius = 6
+        backgroundLayer.layer.cornerCurve = .continuous
+        backgroundLayer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backgroundLayer)
 
-        // Dark-mode brightness overlay (sits inside the blur contentView)
-        if #available(iOS 26.0, *) { } else {
-            tintOverlay.isUserInteractionEnabled = false
-            tintOverlay.translatesAutoresizingMaskIntoConstraints = false
-            blurView.contentView.addSubview(tintOverlay)
-            pin(tintOverlay, to: blurView.contentView)
-            updateTintForCurrentAppearance()
-        }
-
-        // ── Recording fill (red layer, above blur, below content) ────────
         recordingLayer.isUserInteractionEnabled = false
-        recordingLayer.backgroundColor = UIColor(red: 0.93, green: 0.23, blue: 0.24, alpha: 1)
-        recordingLayer.layer.cornerRadius = 9
-        recordingLayer.layer.cornerCurve  = .continuous
+        recordingLayer.backgroundColor = UIColor.systemRed
+        recordingLayer.layer.cornerRadius = 6
+        recordingLayer.layer.cornerCurve = .continuous
         recordingLayer.clipsToBounds = true
         recordingLayer.alpha = 0
         recordingLayer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(recordingLayer)
 
-        // ── Content (label / icon) — directly on GlassKey, above both layers ──
         contentLabel.textColor = .label
         contentLabel.textAlignment = .center
         contentLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -80,17 +69,14 @@ private final class GlassKey: UIControl {
         addSubview(contentIcon)
 
         NSLayoutConstraint.activate([
-            // blur fills key
-            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            blurView.topAnchor.constraint(equalTo: topAnchor),
-            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            // recording fill covers same area
+            backgroundLayer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backgroundLayer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backgroundLayer.topAnchor.constraint(equalTo: topAnchor),
+            backgroundLayer.bottomAnchor.constraint(equalTo: bottomAnchor),
             recordingLayer.leadingAnchor.constraint(equalTo: leadingAnchor),
             recordingLayer.trailingAnchor.constraint(equalTo: trailingAnchor),
             recordingLayer.topAnchor.constraint(equalTo: topAnchor),
             recordingLayer.bottomAnchor.constraint(equalTo: bottomAnchor),
-            // content centered
             contentLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             contentLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             contentIcon.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -99,29 +85,19 @@ private final class GlassKey: UIControl {
             contentIcon.heightAnchor.constraint(equalToConstant: 18),
         ])
 
-        layer.shadowColor   = UIColor.black.cgColor
-        layer.shadowOpacity = 0.12
-        layer.shadowRadius  = 0.5
-        layer.shadowOffset  = CGSize(width: 0, height: 1)
-    }
-
-    // MARK: Appearance helpers
-
-    private func updateTintForCurrentAppearance() {
-        if traitCollection.userInterfaceStyle == .dark {
-            tintOverlay.backgroundColor = UIColor.white.withAlphaComponent(isSpecial ? 0.04 : 0.15)
-        } else {
-            tintOverlay.backgroundColor = .clear
-        }
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.32
+        layer.shadowRadius = 0
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+        updateColors()
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
-        updateTintForCurrentAppearance()
+        updateColors()
     }
 
-    /// Shows / hides the vivid red recording fill with a short crossfade.
     func setRecordingHighlight(_ on: Bool) {
         UIView.animate(withDuration: 0.18, delay: 0, options: .beginFromCurrentState) {
             self.recordingLayer.alpha = on ? 1 : 0
@@ -132,9 +108,9 @@ private final class GlassKey: UIControl {
 
     func setLetter(_ text: String) {
         contentLabel.text = text
-        contentLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        contentLabel.font = UIFont.systemFont(ofSize: 22, weight: .regular)
         contentLabel.isHidden = false
-        contentIcon.isHidden  = true
+        contentIcon.isHidden = true
     }
 
     func setSmallText(_ text: String, size: CGFloat = 15) {
@@ -146,9 +122,14 @@ private final class GlassKey: UIControl {
 
     func setIcon(_ name: String, size: CGFloat = 16) {
         let cfg = UIImage.SymbolConfiguration(pointSize: size, weight: .regular)
-        contentIcon.image     = UIImage(systemName: name, withConfiguration: cfg)
-        contentIcon.isHidden  = false
+        contentIcon.image = UIImage(systemName: name, withConfiguration: cfg)
+        contentIcon.isHidden = false
         contentLabel.isHidden = true
+    }
+
+    func setSelected(_ selected: Bool) {
+        isSelectedKey = selected
+        updateColors()
     }
 
     // MARK: Press feedback
@@ -156,20 +137,56 @@ private final class GlassKey: UIControl {
     override var isHighlighted: Bool {
         didSet {
             UIView.animate(withDuration: 0.08, delay: 0, options: .beginFromCurrentState) {
-                self.blurView.alpha = self.isHighlighted ? 0.5 : 1.0
+                self.transform = self.isHighlighted ? CGAffineTransform(scaleX: 0.97, y: 0.97) : .identity
+                self.backgroundLayer.backgroundColor = self.isHighlighted
+                    ? self.highlightColor()
+                    : self.currentColor()
             }
         }
     }
 
     // MARK: Private
 
-    private func pin(_ child: UIView, to parent: UIView) {
-        NSLayoutConstraint.activate([
-            child.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
-            child.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
-            child.topAnchor.constraint(equalTo: parent.topAnchor),
-            child.bottomAnchor.constraint(equalTo: parent.bottomAnchor),
-        ])
+    private func updateColors() {
+        backgroundLayer.backgroundColor = currentColor()
+        contentLabel.textColor = isSelectedKey ? systemBackgroundColor() : .label
+        contentIcon.tintColor = isSelectedKey ? systemBackgroundColor() : .label
+    }
+
+    private func currentColor() -> UIColor {
+        isSelectedKey ? .label : baseColor()
+    }
+
+    private func baseColor() -> UIColor {
+        switch style {
+        case .letter, .space:
+            return traitCollection.userInterfaceStyle == .dark
+                ? UIColor(white: 0.36, alpha: 1)
+                : .white
+        case .special:
+            return traitCollection.userInterfaceStyle == .dark
+                ? UIColor(white: 0.18, alpha: 1)
+                : UIColor(red: 0.674, green: 0.705, blue: 0.748, alpha: 1)
+        case .accent:
+            return UIColor.systemRed.withAlphaComponent(0.18)
+        }
+    }
+
+    private func highlightColor() -> UIColor {
+        switch style {
+        case .letter, .space:
+            return traitCollection.userInterfaceStyle == .dark
+                ? UIColor(white: 0.28, alpha: 1)
+                : UIColor(white: 0.82, alpha: 1)
+        case .special, .accent:
+            return traitCollection.userInterfaceStyle == .dark
+                ? UIColor(white: 0.25, alpha: 1)
+                : UIColor(red: 0.56, green: 0.60, blue: 0.65, alpha: 1)
+        }
+    }
+
+    private func systemBackgroundColor() -> UIColor {
+        traitCollection.userInterfaceStyle == .dark ? .black : .white
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -185,12 +202,18 @@ final class DictationKeyboardView: UIView {
     private static let row2 = Array("asdfghjkl").map(String.init)
     private static let row3 = Array("zxcvbnm").map(String.init)
 
-    private var letterPairs: [(GlassKey, String)] = []
-    private var shiftOn = false { didSet { updateLetterTitles() } }
+    private var letterPairs: [(KeyboardKey, String)] = []
+    private var shiftButton: KeyboardKey?
+    private var shiftOn = false {
+        didSet {
+            updateLetterTitles()
+            shiftButton?.setSelected(shiftOn)
+        }
+    }
 
-    // Dictate key lives in row 4; state drives icon + red fill.
-    private let dictateButton  = GlassKey(special: true)
-    private let dismissButton  = GlassKey(special: true)
+    private let dictateButton = KeyboardKey(style: .accent)
+    private let dismissButton = KeyboardKey(style: .special)
+    private let statusLabel = UILabel()
 
     private let impact = UIImpactFeedbackGenerator(style: .light)
 
@@ -198,17 +221,16 @@ final class DictationKeyboardView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
+        backgroundColor = UIColor(red: 0.812, green: 0.831, blue: 0.859, alpha: 1)
         build()
         impact.prepare()
-        // Initial icon
-        dictateButton.setIcon("mic.fill", size: 18)
+        dictateButton.setIcon("mic.fill", size: 16)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 260)
+        CGSize(width: UIView.noIntrinsicMetric, height: 266)
     }
 
     // MARK: State
@@ -219,14 +241,18 @@ final class DictationKeyboardView: UIView {
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(false)
+            statusLabel.text = ""
         case .recording:
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(true)
+            statusLabel.text = "Recording"
         case .processing:
             dictateButton.isEnabled = false
-            dictateButton.alpha = 0.5
+            dictateButton.alpha = 0.65
             setDictateActive(false)
+            dictateButton.setIcon("waveform", size: 16)
+            statusLabel.text = "Transcribing"
         }
     }
 
@@ -254,8 +280,8 @@ final class DictationKeyboardView: UIView {
             strip.heightAnchor.constraint(equalToConstant: 38),
 
             keys.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 2),
-            keys.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
-            keys.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
+            keys.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            keys.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             keys.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
     }
@@ -270,11 +296,30 @@ final class DictationKeyboardView: UIView {
         dismissButton.addTarget(self, action: #selector(dismissTapped), for: .touchUpInside)
         strip.addSubview(dismissButton)
 
+        statusLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.textAlignment = .center
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        strip.addSubview(statusLabel)
+
+        dictateButton.translatesAutoresizingMaskIntoConstraints = false
+        dictateButton.addTarget(self, action: #selector(dictateTapped), for: .touchUpInside)
+        strip.addSubview(dictateButton)
+
         NSLayoutConstraint.activate([
             dismissButton.leadingAnchor.constraint(equalTo: strip.leadingAnchor, constant: 8),
             dismissButton.centerYAnchor.constraint(equalTo: strip.centerYAnchor),
             dismissButton.widthAnchor.constraint(equalToConstant: 40),
             dismissButton.heightAnchor.constraint(equalToConstant: 30),
+
+            dictateButton.trailingAnchor.constraint(equalTo: strip.trailingAnchor, constant: -8),
+            dictateButton.centerYAnchor.constraint(equalTo: strip.centerYAnchor),
+            dictateButton.widthAnchor.constraint(equalToConstant: 40),
+            dictateButton.heightAnchor.constraint(equalToConstant: 30),
+
+            statusLabel.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: dictateButton.leadingAnchor, constant: -12),
+            statusLabel.centerYAnchor.constraint(equalTo: strip.centerYAnchor),
         ])
         return strip
     }
@@ -291,7 +336,7 @@ final class DictationKeyboardView: UIView {
         container.addSubview(stack)
 
         for ch in letters {
-            let k = GlassKey()
+            let k = KeyboardKey()
             k.setLetter(ch)
             k.addTarget(self, action: #selector(letterTapped(_:)), for: .touchUpInside)
             letterPairs.append((k, ch))
@@ -315,10 +360,11 @@ final class DictationKeyboardView: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
 
-        let shift = GlassKey(special: true)
+        let shift = KeyboardKey(style: .special)
         shift.setIcon("shift", size: 16)
-        shift.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        shift.widthAnchor.constraint(equalToConstant: 44).isActive = true
         shift.addTarget(self, action: #selector(shiftTapped), for: .touchUpInside)
+        shiftButton = shift
         stack.addArrangedSubview(shift)
 
         let ls = UIStackView()
@@ -326,7 +372,7 @@ final class DictationKeyboardView: UIView {
         ls.spacing = 5
         ls.distribution = .fillEqually
         for ch in Self.row3 {
-            let k = GlassKey()
+            let k = KeyboardKey()
             k.setLetter(ch)
             k.addTarget(self, action: #selector(letterTapped(_:)), for: .touchUpInside)
             letterPairs.append((k, ch))
@@ -334,9 +380,9 @@ final class DictationKeyboardView: UIView {
         }
         stack.addArrangedSubview(ls)
 
-        let del = GlassKey(special: true)
+        let del = KeyboardKey(style: .special)
         del.setIcon("delete.left", size: 16)
-        del.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        del.widthAnchor.constraint(equalToConstant: 44).isActive = true
         del.addTarget(self, action: #selector(backspaceTapped), for: .touchUpInside)
         stack.addArrangedSubview(del)
 
@@ -344,7 +390,7 @@ final class DictationKeyboardView: UIView {
         return container
     }
 
-    /// Bottom row: [123] [mic/stop] [   space   ] [return]
+    /// Bottom row: [123] [globe] [space] [return]
     private func buildRow4() -> UIView {
         let container = UIView()
         let stack = UIStackView()
@@ -353,23 +399,24 @@ final class DictationKeyboardView: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
 
-        let nums = GlassKey(special: true)
+        let nums = KeyboardKey(style: .special)
         nums.setSmallText("123")
-        nums.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        nums.widthAnchor.constraint(equalToConstant: 46).isActive = true
         nums.addTarget(self, action: #selector(numbersTapped), for: .touchUpInside)
         stack.addArrangedSubview(nums)
 
-        // Dictate key — compact, same width as 123
-        dictateButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        dictateButton.addTarget(self, action: #selector(dictateTapped), for: .touchUpInside)
-        stack.addArrangedSubview(dictateButton)
+        let globe = KeyboardKey(style: .special)
+        globe.setIcon("globe", size: 17)
+        globe.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        globe.addTarget(self, action: #selector(nextKeyboardTapped), for: .touchUpInside)
+        stack.addArrangedSubview(globe)
 
-        let space = GlassKey()
+        let space = KeyboardKey(style: .space)
         space.setSmallText("space", size: 16)
         space.addTarget(self, action: #selector(spaceTapped), for: .touchUpInside)
         stack.addArrangedSubview(space)
 
-        let ret = GlassKey(special: true)
+        let ret = KeyboardKey(style: .special)
         ret.setSmallText("return")
         ret.widthAnchor.constraint(equalToConstant: 86).isActive = true
         ret.addTarget(self, action: #selector(returnTapped), for: .touchUpInside)
@@ -382,11 +429,8 @@ final class DictationKeyboardView: UIView {
     // MARK: Dictate button appearance
 
     private func setDictateActive(_ on: Bool) {
-        // Swap icon: mic when idle, filled square when recording.
         dictateButton.setIcon(on ? "stop.fill" : "mic.fill", size: 18)
-        // White icon on red background when recording; adaptive label color when idle.
         dictateButton.contentIcon.tintColor = on ? .white : .label
-        // Animate the red fill layer in/out.
         dictateButton.setRecordingHighlight(on)
     }
 
@@ -411,7 +455,7 @@ final class DictationKeyboardView: UIView {
 
     // MARK: Actions
 
-    @objc private func letterTapped(_ sender: GlassKey) {
+    @objc private func letterTapped(_ sender: KeyboardKey) {
         impact.impactOccurred()
         let text = sender.contentLabel.text ?? ""
         delegate?.didInsertText(text)
@@ -422,6 +466,7 @@ final class DictationKeyboardView: UIView {
     @objc private func backspaceTapped() { impact.impactOccurred(); delegate?.didTapBackspace() }
     @objc private func dictateTapped()   { impact.impactOccurred(); delegate?.didTapDictate() }
     @objc private func dismissTapped()   { delegate?.didTapDismiss() }
+    @objc private func nextKeyboardTapped() { delegate?.didTapNextKeyboard() }
     @objc private func numbersTapped()   { impact.impactOccurred() }
     @objc private func spaceTapped()     { impact.impactOccurred(); delegate?.didInsertText(" ") }
     @objc private func returnTapped()    { impact.impactOccurred(); delegate?.didInsertText("\n") }

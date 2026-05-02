@@ -8,7 +8,9 @@ private enum KbdSuite {
     static let errorKey         = "kbdDictationHostError"
     static let transcriptKey    = "kbdTranscript"
     static let sourceKey        = "kbdDictationSource"
+    static let keyboardVisibleKey = "kbdKeyboardVisible"
     static let sourceKeyboard   = "keyboard"
+    static let sourceIntent     = "intent"
 
     static let phaseIdle        = "idle"
     static let phaseStart       = "start"
@@ -56,15 +58,22 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         super.viewWillAppear(animated)
         if case .result = viewState { viewState = .idle }
         if case .error  = viewState { viewState = .idle }
-        // Sync local view state from App Group — a session may already be underway
+        suite?.set(true, forKey: KbdSuite.keyboardVisibleKey)
+        suite?.synchronize()
+        // Sync local view state from App Group. A session may already be underway
         // from another entry point (Action Button or previous keyboard tap).
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-        let keyboardOwned = suite.map { isKeyboardSession($0) } ?? false
+        let canInsertResult = suite.map { isKeyboardConsumableSession($0) } ?? false
         switch activePhase {
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             viewState = .recording
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            if keyboardOwned {
+            if canInsertResult {
+                viewState = .processing
+                startResultPolling()
+            }
+        case KbdSuite.phaseReady:
+            if canInsertResult {
                 viewState = .processing
                 startResultPolling()
             }
@@ -76,6 +85,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        suite?.set(false, forKey: KbdSuite.keyboardVisibleKey)
+        suite?.synchronize()
         stopPhasePolling()
         stopResultPolling()
     }
@@ -83,16 +94,17 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     // MARK: DictationKeyboardViewDelegate
 
     func didTapDictate() {
-        // Source of truth is the App Group phase, not the keyboard's local viewState —
+        // Source of truth is the App Group phase, not the keyboard's local viewState.
         // a session may already be underway from a different entry point (Action Button
         // or earlier keyboard tap that left the host app foregrounded). In that case the
         // keyboard should *toggle stop*, never re-open the host app.
+        suite?.synchronize()
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
         switch activePhase {
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             requestStop()
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            // Already on its way to a result — wait for ready, don't double-trigger.
+            // Already on its way to a result. Wait for ready, don't double-trigger.
             viewState = .processing
             startResultPolling()
         default:
@@ -112,11 +124,15 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         dismissKeyboard()
     }
 
+    func didTapNextKeyboard() {
+        advanceToNextInputMode()
+    }
+
     // MARK: Handoff
 
     private func startHandoff() {
         guard hasFullAccess else {
-            viewState = .error("Enable \"Allow Full Access\" in Settings › General › Keyboard.")
+            viewState = .error("Enable \"Allow Full Access\" in Settings > General > Keyboard.")
             return
         }
         guard let suite else {
@@ -185,8 +201,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         )
     }
 
-    private func isKeyboardSession(_ suite: UserDefaults) -> Bool {
-        (suite.string(forKey: KbdSuite.sourceKey) ?? "") == KbdSuite.sourceKeyboard
+    private func isKeyboardConsumableSession(_ suite: UserDefaults) -> Bool {
+        let source = suite.string(forKey: KbdSuite.sourceKey) ?? ""
+        return source == KbdSuite.sourceKeyboard || source == KbdSuite.sourceIntent
     }
 
     // MARK: Phase polling
@@ -217,14 +234,13 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             case KbdSuite.phaseStart, KbdSuite.phaseRecording:
                 viewState = .recording
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-                if isKeyboardSession(suite) {
+                if isKeyboardConsumableSession(suite) {
                     viewState = .processing
                     startResultPolling()
                 }
             case KbdSuite.phaseReady:
-                // Only auto-insert if this was a keyboard-initiated session.
-                // Action Button / in-app sessions go to the clipboard instead.
-                if isKeyboardSession(suite) {
+                if isKeyboardConsumableSession(suite) {
+                    viewState = .processing
                     startResultPolling()
                 }
             default:
@@ -232,7 +248,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             }
 
         case .recording:
-            // Stop was triggered externally (shortcut) — catch all transitions to processing/done.
+            // Stop was triggered externally (shortcut). Catch all transitions to processing/done.
             switch phase {
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing, KbdSuite.phaseReady:
                 viewState = .processing
@@ -268,6 +284,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
     private func checkResult() {
         guard let suite else { return }
+        suite.synchronize()
         let phase = suite.string(forKey: KbdSuite.phaseKey) ?? ""
 
         if phase == KbdSuite.phaseFailed {
@@ -277,6 +294,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         }
 
         guard phase == KbdSuite.phaseReady,
+              isKeyboardConsumableSession(suite),
               let text = suite.string(forKey: KbdSuite.transcriptKey), !text.isEmpty
         else { return }
 

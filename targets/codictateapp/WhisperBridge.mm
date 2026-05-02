@@ -162,7 +162,10 @@ static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
         int nSegments = whisper_full_n_segments(ctx);
         for (int i = 0; i < nSegments; i++) {
             const char *text = whisper_full_get_segment_text(ctx, i);
-            if (text) [transcript appendFormat:@"%s", text];
+            if (text) {
+                NSString *segment = [NSString stringWithUTF8String:text];
+                if (segment) [transcript appendString:segment];
+            }
         }
 
         NSString *trimmed = [transcript

@@ -41,6 +41,6 @@ export default defineConfig(
       semi: 'off',
       'prettier/prettier': ['error', prettierOptions],
     },
-    ignores: ['example/**'],
+    ignores: ['example/**', 'expo-env.d.ts'],
   }
 )

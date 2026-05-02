@@ -15,6 +15,7 @@ enum KeyboardDictationBridge {
     static let errorKey = "kbdDictationHostError"
     static let transcriptKey = "kbdTranscript"
     static let sourceKey = "kbdDictationSource"
+    static let keyboardVisibleKey = "kbdKeyboardVisible"
 
     static let phaseIdle = "idle"
     static let phaseStart = "start"
@@ -86,7 +87,7 @@ private final class KeyboardHostTranscription: NSObject {
                 case .failure(let error):
                     KeyboardHostRecorder.shared.fail(
                         suite,
-                        "Speech model: \(error.localizedDescription). Open Codictate once on Wi‑Fi to download the small model."
+                        "Speech model: \(error.localizedDescription). Open Codictate once on Wi-Fi to download the small model."
                     )
                     onComplete(nil)
                 case .success(let modelPath):
@@ -102,21 +103,16 @@ private final class KeyboardHostTranscription: NSObject {
                     }
                     self.bridge.transcribeWavFile(wavPath, language: "auto") { transcript, errorMsg in
                         if let text = transcript, !text.isEmpty {
-                            let isIntentSession = source == KeyboardDictationBridge.sourceIntent
-                            if source != KeyboardDictationBridge.sourceKeyboard {
-                                Self.copyToClipboard(text)
-                            }
-
-                            if isIntentSession {
-                                suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
-                                suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-                            } else {
-                                suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
-                                suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
-                            }
+                            suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
+                            suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
                             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
                             suite.synchronize()
                             KeyboardHostRecorder.reloadControlWidget()
+                            KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
+                                source,
+                                transcript: text,
+                                suite: suite
+                            )
                             if #available(iOS 16.2, *) {
                                 DictationLiveActivityManager.shared.updateToReady()
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -134,11 +130,7 @@ private final class KeyboardHostTranscription: NSObject {
                             NotificationCenter.default.post(
                                 name: DictationNotification.stateChanged,
                                 object: nil,
-                                userInfo: [
-                                    "phase": isIntentSession
-                                        ? KeyboardDictationBridge.phaseIdle
-                                        : KeyboardDictationBridge.phaseReady
-                                ]
+                                userInfo: ["phase": KeyboardDictationBridge.phaseReady]
                             )
                             NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
                             onComplete(text)
@@ -151,16 +143,6 @@ private final class KeyboardHostTranscription: NSObject {
                 }
             }
         )
-    }
-
-    private static func copyToClipboard(_ text: String) {
-        if Thread.isMainThread {
-            UIPasteboard.general.string = text
-        } else {
-            DispatchQueue.main.sync {
-                UIPasteboard.general.string = text
-            }
-        }
     }
 
 }
@@ -286,14 +268,14 @@ final class DictationLiveActivityManager {
     }
 }
 
-// MARK: - Darwin IPC (keyboard extension → host app)
+// MARK: - Darwin IPC (keyboard extension to host app)
 
 private let kbdDarwinStartName    = "app.codictate.dictation.keyboard.start"
 private let kbdDarwinStopName     = "app.codictate.dictation.keyboard.stop"
 private let intentDarwinStartName = "app.codictate.dictation.intent.start"
 private let intentDarwinStopName  = "app.codictate.dictation.intent.stop"
 
-// C-compatible callback — relays Darwin notification name to NSNotificationCenter on the main thread.
+// C-compatible callback. Relays Darwin notification name to NSNotificationCenter on the main thread.
 // Must be file-scope (not a method) because CFNotificationCallback is a C function pointer.
 private func kbdDarwinCallback(
     _ center: CFNotificationCenter?,
@@ -309,7 +291,7 @@ private func kbdDarwinCallback(
 }
 
 /// Runs inside the **main iOS app**. Records natively to the App Group regardless of which
-/// entry point initiated the session — keyboard URL, JS module, or App Intent. JS thread
+/// entry point initiated the session: keyboard URL, JS module, or App Intent. JS thread
 /// suspension does not stop recording because all control flow lives in Swift.
 /// `UIBackgroundModes` must include `audio` for background recording to survive.
 final class KeyboardHostRecorder: NSObject {
@@ -319,11 +301,18 @@ final class KeyboardHostRecorder: NSObject {
     private var recorder: AVAudioRecorder?
     private var pollTimer: Timer?
     private var autoStopTimer: Timer?
+    private var keyboardKeepaliveTimer: Timer?
+    private var keyboardBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var transcriptFallbackWorkItem: DispatchWorkItem?
     private var activationObserver: NSObjectProtocol?
     private var didInstallNotificationObservers = false
 
     /// Auto-stop fallback in case no entry point requests stop (covers stuck-in-background).
     private static let autoStopAfterSeconds: TimeInterval = 60
+    /// Keeps the host process warm after a keyboard handoff so a quick follow-up start can skip reopening the app.
+    private static let keyboardKeepaliveSeconds: TimeInterval = 30
+    /// Gives the visible keyboard first chance to insert Action Button output before clipboard fallback.
+    private static let transcriptFallbackSeconds: TimeInterval = 2
 
     private static let recordingSettings: [String: Any] = [
         AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -340,17 +329,18 @@ final class KeyboardHostRecorder: NSObject {
 
     deinit {
         cancelActivationWait()
+        endKeyboardKeepalive()
     }
 
     // MARK: - Bootstrap
 
     /// Wires NotificationCenter observers so other Swift modules (the JS bridge module,
     /// App Intent, etc.) can drive recording without a direct symbol dependency on this class.
-    /// Idempotent — call from `application(_:didFinishLaunchingWithOptions:)`.
-    /// Called from `application(_:didFinishLaunchingWithOptions:)` — already on the main thread.
+    /// Idempotent. Call from `application(_:didFinishLaunchingWithOptions:)`.
+    /// Called from `application(_:didFinishLaunchingWithOptions:)`, already on the main thread.
     /// Installs observers synchronously so they are ready before `applicationDidBecomeActive` fires.
     func bootstrap() {
-        NSLog("[KeyboardHost] bootstrap() — installing observers")
+        NSLog("[KeyboardHost] bootstrap() - installing observers")
         installNotificationObservers()
         recoverStaleState()
     }
@@ -425,7 +415,7 @@ final class KeyboardHostRecorder: NSObject {
 
         // Darwin (cross-process) listeners for keyboard extension.
         // Handles the case where Codictate is already in the foreground when the keyboard
-        // Dictate button is tapped — didBecomeActiveNotification never fires then.
+        // Dictate button is tapped. didBecomeActiveNotification never fires then.
         let darwinCenter = CFNotificationCenterGetDarwinNotifyCenter()
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         for startName in [kbdDarwinStartName, intentDarwinStartName] {
@@ -511,6 +501,8 @@ final class KeyboardHostRecorder: NSObject {
             guard let self else { return }
             guard self.recorder == nil else { return }
             guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+            self.transcriptFallbackWorkItem?.cancel()
+            self.transcriptFallbackWorkItem = nil
 
             let filename = "host-\(UUID().uuidString).wav"
             suite.set(KeyboardDictationBridge.phaseStart, forKey: KeyboardDictationBridge.phaseKey)
@@ -530,6 +522,8 @@ final class KeyboardHostRecorder: NSObject {
     func startRecordingFromIntent() {
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
 
         let filename = "intent-\(UUID().uuidString).wav"
         suite.set(KeyboardDictationBridge.phaseStart, forKey: KeyboardDictationBridge.phaseKey)
@@ -547,6 +541,8 @@ final class KeyboardHostRecorder: NSObject {
     func beginRecordingIfPending() {
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
         suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseStart else { return }
@@ -601,7 +597,7 @@ final class KeyboardHostRecorder: NSObject {
             NSLog("[KeyboardHost] mic permission=\(perm.rawValue) (0=undetermined, 1=denied, 2=granted)")
             switch perm {
             case .denied:
-                fail(suite, "Microphone access denied. Enable Codictate in Settings › Privacy › Microphone.")
+                fail(suite, "Microphone access denied. Enable Codictate in Settings > Privacy > Microphone.")
             case .undetermined:
                 AVAudioApplication.requestRecordPermission { [weak self] granted in
                     DispatchQueue.main.async {
@@ -621,7 +617,7 @@ final class KeyboardHostRecorder: NSObject {
             let session = AVAudioSession.sharedInstance()
             switch session.recordPermission {
             case .denied:
-                fail(suite, "Microphone access denied. Enable Codictate in Settings › Privacy › Microphone.")
+                fail(suite, "Microphone access denied. Enable Codictate in Settings > Privacy > Microphone.")
             case .undetermined:
                 session.requestRecordPermission { [weak self] granted in
                     DispatchQueue.main.async {
@@ -673,9 +669,12 @@ final class KeyboardHostRecorder: NSObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+            self.transcriptFallbackWorkItem?.cancel()
+            self.transcriptFallbackWorkItem = nil
             self.pollTimer?.invalidate()
             self.pollTimer = nil
             self.cancelAutoStop()
+            self.endKeyboardKeepalive()
             self.recorder?.stop()
             self.recorder = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -695,7 +694,7 @@ final class KeyboardHostRecorder: NSObject {
         }
     }
 
-    /// Lookup-only — used by the JS bridge to seed initial state without polling.
+    /// Lookup-only. Used by the JS bridge to seed initial state without polling.
     func currentPhase() -> String {
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else {
             return KeyboardDictationBridge.phaseIdle
@@ -717,9 +716,12 @@ final class KeyboardHostRecorder: NSObject {
 
     fileprivate func fail(_ suite: UserDefaults, _ message: String) {
         cancelActivationWait()
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
         pollTimer?.invalidate()
         pollTimer = nil
         cancelAutoStop()
+        endKeyboardKeepalive()
         recorder?.stop()
         recorder = nil
         suite.set(KeyboardDictationBridge.phaseFailed, forKey: KeyboardDictationBridge.phaseKey)
@@ -754,6 +756,110 @@ final class KeyboardHostRecorder: NSObject {
     private func cancelAutoStop() {
         autoStopTimer?.invalidate()
         autoStopTimer = nil
+    }
+
+    private func beginKeyboardKeepaliveIfNeeded(source: String) {
+        guard source == KeyboardDictationBridge.sourceKeyboard else { return }
+        keyboardKeepaliveTimer?.invalidate()
+        keyboardKeepaliveTimer = nil
+
+        guard keyboardBackgroundTask == .invalid else { return }
+        keyboardBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "CodictateKeyboardDictation"
+        ) { [weak self] in
+            DispatchQueue.main.async {
+                self?.handleKeyboardKeepaliveExpired()
+            }
+        }
+        if keyboardBackgroundTask == .invalid {
+            NSLog("[KeyboardHost] Keyboard keepalive could not start")
+        } else {
+            NSLog("[KeyboardHost] Keyboard keepalive started")
+        }
+    }
+
+    private func scheduleKeyboardKeepaliveEnd() {
+        guard keyboardBackgroundTask != .invalid else { return }
+        keyboardKeepaliveTimer?.invalidate()
+        keyboardKeepaliveTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.keyboardKeepaliveSeconds,
+            repeats: false
+        ) { [weak self] _ in
+            self?.endKeyboardKeepalive()
+        }
+        RunLoop.main.add(keyboardKeepaliveTimer!, forMode: .common)
+    }
+
+    private func endKeyboardKeepalive() {
+        keyboardKeepaliveTimer?.invalidate()
+        keyboardKeepaliveTimer = nil
+        guard keyboardBackgroundTask != .invalid else { return }
+        let task = keyboardBackgroundTask
+        keyboardBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
+        NSLog("[KeyboardHost] Keyboard keepalive ended")
+    }
+
+    private func handleKeyboardKeepaliveExpired() {
+        keyboardKeepaliveTimer?.invalidate()
+        keyboardKeepaliveTimer = nil
+        if recorder != nil {
+            requestStop()
+        }
+        endKeyboardKeepalive()
+    }
+
+    fileprivate func handleTranscriptReadyForSource(
+        _ source: String,
+        transcript: String,
+        suite: UserDefaults
+    ) {
+        transcriptFallbackWorkItem?.cancel()
+
+        if source == KeyboardDictationBridge.sourceKeyboard {
+            scheduleKeyboardKeepaliveEnd()
+            return
+        }
+
+        guard source == KeyboardDictationBridge.sourceIntent else {
+            return
+        }
+
+        let fallback = DispatchWorkItem { [weak self, weak suite] in
+            guard let self, let suite else { return }
+            suite.synchronize()
+            let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey)
+                ?? KeyboardDictationBridge.phaseIdle
+            let pendingText = suite.string(forKey: KeyboardDictationBridge.transcriptKey)
+            guard phase == KeyboardDictationBridge.phaseReady,
+                  pendingText == transcript else { return }
+            self.copyTranscriptToClipboard(transcript)
+            suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.synchronize()
+            Self.reloadControlWidget()
+            NotificationCenter.default.post(
+                name: DictationNotification.stateChanged,
+                object: nil,
+                userInfo: ["phase": KeyboardDictationBridge.phaseIdle]
+            )
+        }
+
+        transcriptFallbackWorkItem = fallback
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.transcriptFallbackSeconds,
+            execute: fallback
+        )
+    }
+
+    private func copyTranscriptToClipboard(_ text: String) {
+        if Thread.isMainThread {
+            UIPasteboard.general.string = text
+        } else {
+            DispatchQueue.main.async {
+                UIPasteboard.general.string = text
+            }
+        }
     }
 
     // MARK: - Recording lifecycle
@@ -835,6 +941,7 @@ final class KeyboardHostRecorder: NSObject {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
         let isIntentStart = source == KeyboardDictationBridge.sourceIntent
+        beginKeyboardKeepaliveIfNeeded(source: source)
 
         if #available(iOS 16.2, *) {
             let didStartLiveActivity = DictationLiveActivityManager.shared.startRecording()
@@ -981,9 +1088,12 @@ final class KeyboardHostRecorder: NSObject {
 
     private func resetPendingStartAfterStop(suite: UserDefaults) {
         cancelActivationWait()
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
         pollTimer?.invalidate()
         pollTimer = nil
         cancelAutoStop()
+        endKeyboardKeepalive()
         recorder?.stop()
         recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

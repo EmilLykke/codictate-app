@@ -6,14 +6,14 @@
  * Adds the CodictateDictationKeyboard keyboard extension to the iOS project.
  *
  * During prebuild this plugin:
- *  1. Copies extension sources from targets/CodictateDictationKeyboard/ → ios/…
+ *  1. Copies extension sources from targets/CodictateDictationKeyboard/ to ios/.
  *  2. Copies WhisperBridge.h into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
- *  3. Copies other targets/codictateapp/*.swift into ios/codictateapp/ (not KeyboardHostRecorder — see 4).
+ *  3. Copies other targets/codictateapp/*.swift into ios/codictateapp/ (not KeyboardHostRecorder; see 4).
  *  4. Injects targets/codictateapp/KeyboardHostRecorder.swift into AppDelegate.swift (app target).
  *  5. Patches AppDelegate for codictateapp://keyboard-record.
  *  6. Adds App Group entitlement, keyboard extension (UIKit-only), links WhisperBridge.mm + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
  *
- * All Xcode edits live in this plugin only — do not hand-edit ios/*.xcodeproj; prebuild regenerates ios/.
+ * All Xcode edits live in this plugin only. Do not hand-edit ios/*.xcodeproj; prebuild regenerates ios/.
  */
 
 import {
@@ -58,7 +58,7 @@ const RNWHISPER_XCFRAMEWORK =
   "../node_modules/whisper.rn/ios/rnwhisper.xcframework";
 
 // node-xcode `pbxFile` resolves the canonical path stored in PBXFileReference
-// (e.g. UIKit.framework → System/Library/Frameworks/UIKit.framework).
+// (e.g. UIKit.framework to System/Library/Frameworks/UIKit.framework).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PbxFile = require("xcode/lib/pbxFile") as new (
   filepath: string,
@@ -749,11 +749,11 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
         }
         console.log(
-          `[withKeyboardExtension] Copied ${HOST_SWIFT_SRC_DIR} sources (except ${HOST_RECORDER_FILE}) → ios/${iosProjectName}/`,
+          `[withKeyboardExtension] Copied ${HOST_SWIFT_SRC_DIR} sources (except ${HOST_RECORDER_FILE}) to ios/${iosProjectName}/`,
         );
       }
 
-      // Expo pins SWIFT_OBJC_BRIDGING_HEADER to <ProjectName>-Bridging-Header.h — import Whisper there.
+      // Expo pins SWIFT_OBJC_BRIDGING_HEADER to <ProjectName>-Bridging-Header.h. Import Whisper there.
       const expoBridgingPath = path.join(
         hostDestDir,
         `${iosProjectName}-Bridging-Header.h`,
@@ -787,7 +787,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
             path.join(widgetDestDir, CONTROL_WIDGET_FILE),
           );
           console.log(
-            `[withKeyboardExtension] Copied ${CONTROL_WIDGET_FILE} → ios/${WIDGET_TARGET_NAME}/`,
+            `[withKeyboardExtension] Copied ${CONTROL_WIDGET_FILE} to ios/${WIDGET_TARGET_NAME}/`,
           );
         }
 
@@ -800,7 +800,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
             path.join(widgetDestDir, liveActivityWidgetFile),
           );
           console.log(
-            `[withKeyboardExtension] Copied ${liveActivityWidgetFile} → ios/${WIDGET_TARGET_NAME}/`,
+            `[withKeyboardExtension] Copied ${liveActivityWidgetFile} to ios/${WIDGET_TARGET_NAME}/`,
           );
         }
 
@@ -815,7 +815,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         if (fs.existsSync(attrsSrc)) {
           fs.copyFileSync(attrsSrc, path.join(widgetDestDir, attrsFile));
           console.log(
-            `[withKeyboardExtension] Copied ${attrsFile} → ios/${WIDGET_TARGET_NAME}/`,
+            `[withKeyboardExtension] Copied ${attrsFile} to ios/${WIDGET_TARGET_NAME}/`,
           );
         }
 
@@ -882,7 +882,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
               "[withKeyboardExtension] Patched existing openURL handler in AppDelegate",
             );
           } else {
-            // openURL method not present in expected format — inject before the class closing brace.
+            // openURL method not present in expected format. Inject before the class closing brace.
             const injectedMethod = [
               "",
               "  public override func application(",
@@ -907,19 +907,19 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
               );
             } else {
               console.warn(
-                "[withKeyboardExtension] Could not inject openURL handler — AppDelegate format unrecognized",
+                "[withKeyboardExtension] Could not inject openURL handler - AppDelegate format unrecognized",
               );
             }
           }
         }
 
         // Skip ALL Expo/RN init when cold-launched in background for AudioRecordingIntent.
-        // Guard both willFinish and didFinish — the crash may happen in either super chain.
+        // Guard both willFinish and didFinish. The crash may happen in either super chain.
         if (!ad.includes("applicationState == .background")) {
           // 1. Guard didFinishLaunchingWithOptions: skip RN bridge, window, and super call.
           ad = ad.replace(
             "  ) -> Bool {\n    let delegate = ReactNativeDelegate()",
-            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch — skipping React Native init")\n      return true\n    }\n    let delegate = ReactNativeDelegate()',
+            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch - skipping React Native init")\n      return true\n    }\n    let delegate = ReactNativeDelegate()',
           );
           // Remove old bootstrap placement (before return super) to avoid duplicate
           ad = ad.replace(
@@ -928,7 +928,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
 
           // 2. Inject willFinishLaunchingWithOptions override before the class closing brace.
-          //    This fires BEFORE didFinish — catches crashes in the super chain even earlier.
+          //    This fires BEFORE didFinish. It catches crashes in the super chain even earlier.
           if (!ad.includes("willFinishLaunchingWithOptions")) {
             const willFinishMethod = [
               "",
@@ -1057,7 +1057,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
     }
 
     // ------------------------------------------------------------------
-    // 3c. Extension sources — UI + bridge only (Whisper runs in the main app).
+    // 3c. Extension sources: UI + bridge only (Whisper runs in the main app).
     // ------------------------------------------------------------------
     EXTENSION_SOURCES.forEach((filename) => {
       project.addSourceFile(filename, { target: extUuid }, groupKey);
@@ -1130,7 +1130,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       try {
         project.addTargetDependency(appTarget.uuid, [extUuid]);
       } catch {
-        // Rare: malformed project graph — run `npx expo prebuild --platform ios`.
+        // Rare: malformed project graph. Run `npx expo prebuild --platform ios`.
       }
     }
 
@@ -1140,7 +1140,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
   // Add widget-only Swift files to the widget extension's Sources build phase.
   // addSourceFile() defaults to the main app's Sources phase, so we must move
   // each file out of the main app and into the widget extension explicitly.
-  // DictationActivityAttributes.swift is NOT widget-only — it compiles in both
+  // DictationActivityAttributes.swift is NOT widget-only. It compiles in both
   // targets (the main app needs it for ActivityKit calls in KeyboardHostRecorder).
   const WIDGET_ONLY_FILES = [
     CONTROL_WIDGET_FILE,

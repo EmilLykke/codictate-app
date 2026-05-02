@@ -69,8 +69,9 @@ const ACTION_BUTTON_SHORTCUT_URL =
 
 /** iOS Settings deep links are not officially supported; try common forms, then fall back. */
 const IOS_KEYBOARD_SETTINGS_URLS = [
-  'App-Prefs:root=General&path=Keyboard/KEYBOARDS',
-  'App-Prefs:root=General&path=Keyboard',
+  'App-Prefs:General&path=Keyboard/KEYBOARDS',
+  'App-Prefs:General&path=Keyboard',
+  'App-Prefs:General',
 ] as const
 
 export function ScreenSettings() {
@@ -190,16 +191,8 @@ export function ScreenSettings() {
 
   const openIosKeyboardSettings = async () => {
     await Haptics.selectionAsync()
-    for (const url of IOS_KEYBOARD_SETTINGS_URLS) {
-      try {
-        if (await Linking.canOpenURL(url)) {
-          await Linking.openURL(url)
-          return
-        }
-      } catch {
-        /* try next URL */
-      }
-    }
+    // canOpenURL always returns false for App-Prefs: without declaring the scheme
+    // in LSApplicationQueriesSchemes, so skip the check and try directly.
     for (const url of IOS_KEYBOARD_SETTINGS_URLS) {
       try {
         await Linking.openURL(url)
@@ -213,7 +206,7 @@ export function ScreenSettings() {
     } catch {
       Alert.alert(
         'Unable to open Settings',
-        'On your device, open Settings, then General, Keyboard, Keyboards, and add Codictate.'
+        'On your device, open Settings → General → Keyboard → Keyboards, and add Codictate.'
       )
     }
   }

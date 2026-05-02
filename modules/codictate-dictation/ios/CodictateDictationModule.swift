@@ -7,11 +7,11 @@ import UIKit
 /// for status/transcript values.
 ///
 /// Symbol names like `codictate.dictation.start` and the App Group key strings are
-/// duplicated here intentionally — a separate Swift module cannot import the main app
+/// duplicated here intentionally. A separate Swift module cannot import the main app
 /// target's types directly, and the App Group keys are part of our public IPC contract.
 public final class CodictateDictationModule: Module {
 
-    // Mirror of `KeyboardDictationBridge` — keep in sync.
+    // Mirror of `KeyboardDictationBridge`. Keep in sync.
     private static let appGroupID = "group.app.codictate"
     /// In-app dictation + Action Button. Must match KeyboardDictationBridge.preferredVariantKey.
     private static let preferredVariantKey = "preferredWhisperVariant"
@@ -19,6 +19,7 @@ public final class CodictateDictationModule: Module {
     private static let transcriptKey = "kbdTranscript"
     private static let errorKey = "kbdDictationHostError"
     private static let sourceKey = "kbdDictationSource"
+    private static let keyboardVisibleKey = "kbdKeyboardVisible"
 
     // Mirror of `DictationNotification`.
     private static let startNotification = Notification.Name("codictate.dictation.start")
@@ -83,6 +84,8 @@ public final class CodictateDictationModule: Module {
             }
             guard source == "host" else {
                 if source == "intent" {
+                    let keyboardVisible = suite.bool(forKey: Self.keyboardVisibleKey)
+                    guard !keyboardVisible else { return nil }
                     UIPasteboard.general.string = text
                     suite.set("idle", forKey: Self.phaseKey)
                     suite.removeObject(forKey: Self.transcriptKey)
@@ -166,7 +169,7 @@ public final class CodictateDictationModule: Module {
         }
     }
 
-    // MARK: - NotificationCenter observers → JS events
+    // MARK: - NotificationCenter observers to JS events
 
     private func installObservers() {
         stateObserver = NotificationCenter.default.addObserver(
