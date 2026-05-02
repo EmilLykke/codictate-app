@@ -12,7 +12,9 @@ import UIKit
 public final class CodictateDictationModule: Module {
 
     // Mirror of `KeyboardDictationBridge` — keep in sync.
-    private static let appGroupID = "group.com.emillo2003.codictate-app"
+    private static let appGroupID = "group.app.codictate"
+    /// In-app dictation + Action Button. Must match KeyboardDictationBridge.preferredVariantKey.
+    private static let preferredVariantKey = "preferredWhisperVariant"
     private static let phaseKey = "kbdDictationPhase"
     private static let transcriptKey = "kbdTranscript"
     private static let errorKey = "kbdDictationHostError"
@@ -147,6 +149,25 @@ public final class CodictateDictationModule: Module {
                 }
                 return ["variant": variant.rawValue, "ready": ready, "size": size]
             }
+        }
+
+        AsyncFunction("getPreferredModel") { () -> String in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.base.rawValue }
+            let raw = suite.string(forKey: Self.preferredVariantKey)
+            guard raw == AppGroupModelManager.Variant.tiny.rawValue else {
+                return AppGroupModelManager.Variant.base.rawValue
+            }
+            return AppGroupModelManager.Variant.tiny.rawValue
+        }
+
+        AsyncFunction("setPreferredModel") { (variantStr: String?) -> Void in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
+            let trimmed = (variantStr ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = trimmed == AppGroupModelManager.Variant.tiny.rawValue
+                ? AppGroupModelManager.Variant.tiny.rawValue
+                : AppGroupModelManager.Variant.base.rawValue
+            suite.set(value, forKey: Self.preferredVariantKey)
+            suite.synchronize()
         }
     }
 

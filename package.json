@@ -9,6 +9,13 @@
     "android": "expo run:android",
     "prebuild:ios": "expo prebuild --platform ios",
     "prebuild": "expo prebuild",
+    "eas:development": "dotenv -e .env -- eas build --profile development --platform ios --auto-submit",
+    "eas:preview": "dotenv -e .env -- eas build --profile preview --platform ios --auto-submit",
+    "eas:production": "dotenv -e .env -- eas build --profile production --platform ios --auto-submit",
+    "eas:development-local": "dotenv -e .env -- eas build --profile development --platform ios --local",
+    "eas:preview-local": "dotenv -e .env -- eas build --profile preview --platform ios --local",
+    "eas:production-local": "dotenv -e .env -- eas build --profile production --platform ios --local",
+    "eas:submit": "dotenv -e .env -- eas submit --platform ios",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

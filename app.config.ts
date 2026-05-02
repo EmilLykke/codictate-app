@@ -3,7 +3,7 @@ import { ExpoConfig } from "expo/config";
 import withKeyboardExtension from "./plugins/withKeyboardExtension";
 
 const config: ExpoConfig = {
-  name: "codictate-app",
+  name: "Codictate",
   slug: "codictate-app",
   version: "1.0.0",
   orientation: "portrait",
@@ -11,31 +11,33 @@ const config: ExpoConfig = {
   scheme: "codictateapp",
   userInterfaceStyle: "dark",
   ios: {
-    icon: "./assets/expo.icon",
-    bundleIdentifier: "com.emillo2003.codictate-app",
+    icon: "./assets/codictate.icon",
+    bundleIdentifier: "app.codictate",
     infoPlist: {
       NSMicrophoneUsageDescription:
         "Codictate uses the microphone to record your voice for on-device transcription.",
       UIBackgroundModes: ["audio"],
+      LSApplicationQueriesSchemes: ["App-Prefs"],
     },
     entitlements: {
-      "com.apple.security.application-groups": [
-        "group.com.emillo2003.codictate-app",
-      ],
+      "com.apple.security.application-groups": ["group.app.codictate"],
     },
   },
   android: {
     adaptiveIcon: {
-      backgroundColor: "#E6F4FE",
-      foregroundImage: "./assets/images/android-icon-foreground.png",
-      backgroundImage: "./assets/images/android-icon-background.png",
-      monochromeImage: "./assets/images/android-icon-monochrome.png",
+      backgroundColor: "#000000",
+      foregroundImage: "./assets/images/icon.png",
     },
     predictiveBackGestureEnabled: false,
   },
   web: {
     output: "static",
-    favicon: "./assets/images/favicon.png",
+    favicon: "./assets/images/icon.png",
+  },
+  extra: {
+    eas: {
+      projectId: "6d9b2adc-0482-4953-b3ec-8ea381f454e0",
+    },
   },
   plugins: [
     "expo-router",
@@ -50,7 +52,7 @@ const config: ExpoConfig = {
     [
       "expo-widgets",
       {
-        groupIdentifier: "group.com.emillo2003.codictate-app",
+        groupIdentifier: "group.app.codictate",
       },
     ],
     [
@@ -58,7 +60,7 @@ const config: ExpoConfig = {
       {
         backgroundColor: "#000000",
         android: {
-          image: "./assets/images/splash-icon.png",
+          image: "./assets/images/icon.png",
           imageWidth: 76,
         },
       },

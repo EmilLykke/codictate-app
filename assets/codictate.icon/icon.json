@@ -1,0 +1,18 @@
+{
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "icon.png",
+          "name": "Codictate"
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "circles": [
+      "watchOS"
+    ],
+    "squares": "shared"
+  }
+}

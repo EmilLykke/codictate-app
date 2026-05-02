@@ -22,7 +22,10 @@ import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings
 import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
-import { useNativeModel } from '@/hooks/whisper/use-native-model'
+import {
+  type NativeModelState,
+  useNativeModel,
+} from '@/hooks/whisper/use-native-model'
 
 export default function Index() {
   const model = useNativeModel()
@@ -148,15 +151,14 @@ function DictationScreen() {
   )
 }
 
-type SetupScreenProps =
-  | { status: 'checking' }
-  | { status: 'downloading'; progress: number }
+type SetupModelInput = Exclude<NativeModelState, { status: 'error' | 'ready' }>
 
-function SetupScreen(props: { model: SetupScreenProps }) {
+function SetupScreen(props: { model: SetupModelInput }) {
   const { model } = props
   const isDownloading = model.status === 'downloading'
   const progress = isDownloading ? model.progress : 0
   const pct = Math.round(progress * 100)
+  const approxMb = isDownloading && model.variant === 'tiny' ? 57 : 143
 
   return (
     <View style={styles.centeredFill}>
@@ -180,7 +182,7 @@ function SetupScreen(props: { model: SetupScreenProps }) {
         </View>
 
         <Text style={styles.setupSubtitle}>
-          {isDownloading ? `${pct}% · ~143 MB · one-time download` : ''}
+          {isDownloading ? `${pct}% · ~${approxMb} MB · one-time download` : ''}
         </Text>
       </View>
     </View>

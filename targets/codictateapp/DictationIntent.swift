@@ -12,14 +12,14 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     )
     static var openAppWhenRun: Bool = false
 
-    private static let suiteName = "group.com.emillo2003.codictate-app"
+    private static let suiteName = "group.app.codictate"
     private static let phaseKey = "kbdDictationPhase"
     private static let wavFileKey = "kbdDictationWavFile"
     private static let sourceKey = "kbdDictationSource"
     private static let errorKey = "kbdDictationHostError"
     private static let transcriptKey = "kbdTranscript"
-    private static let darwinStart = "com.emillo2003.codictate.dictation.intent.start"
-    private static let darwinStop = "com.emillo2003.codictate.dictation.intent.stop"
+    private static let darwinStart = "app.codictate.dictation.intent.start"
+    private static let darwinStop = "app.codictate.dictation.intent.stop"
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         NSLog("[DictationIntent] perform() entry")
@@ -87,7 +87,7 @@ struct StopDictationIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         guard let suite = UserDefaults(
-            suiteName: "group.com.emillo2003.codictate-app"
+            suiteName: "group.app.codictate"
         ) else { return .result(value: "") }
         suite.synchronize()
         let phase = suite.string(forKey: "kbdDictationPhase") ?? "idle"
@@ -96,7 +96,7 @@ struct StopDictationIntent: AppIntent {
             suite.synchronize()
             CFNotificationCenterPostNotification(
                 CFNotificationCenterGetDarwinNotifyCenter(),
-                CFNotificationName(rawValue: "com.emillo2003.codictate.dictation.intent.stop" as CFString),
+                CFNotificationName(rawValue: "app.codictate.dictation.intent.stop" as CFString),
                 nil, nil, true
             )
             let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()

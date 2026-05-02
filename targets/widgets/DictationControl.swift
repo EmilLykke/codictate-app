@@ -5,7 +5,7 @@ import WidgetKit
 // MARK: - App Group constants (mirrored from host app)
 
 private enum DictationBridge {
-    static let suiteName    = "group.com.emillo2003.codictate-app"
+    static let suiteName    = "group.app.codictate"
     static let phaseKey     = "kbdDictationPhase"
     static let wavFileKey   = "kbdDictationWavFile"
     static let sourceKey    = "kbdDictationSource"
@@ -17,7 +17,7 @@ private enum DictationBridge {
 
 @available(iOS 18.0, *)
 struct DictationControlWidget: ControlWidget {
-    static let kind = "com.emillo2003.codictate.DictationControl"
+    static let kind = "app.codictate.DictationControl"
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
@@ -97,7 +97,7 @@ struct DictationControlToggleIntent: SetValueIntent {
             suite.removeObject(forKey: DictationBridge.transcriptKey)
             suite.synchronize()
             NSLog("[ControlIntent] Wrote phase=start, posting Darwin + NSNotification")
-            postDarwin("com.emillo2003.codictate.dictation.intent.start")
+            postDarwin("app.codictate.dictation.intent.start")
             await MainActor.run {
                 NotificationCenter.default.post(
                     name: Notification.Name("codictate.dictation.start"),
@@ -114,7 +114,7 @@ struct DictationControlToggleIntent: SetValueIntent {
             suite.set("stop_requested", forKey: DictationBridge.phaseKey)
             suite.synchronize()
             NSLog("[ControlIntent] Wrote phase=stop_requested, posting Darwin + NSNotification")
-            postDarwin("com.emillo2003.codictate.dictation.intent.stop")
+            postDarwin("app.codictate.dictation.intent.stop")
             await MainActor.run {
                 NotificationCenter.default.post(
                     name: Notification.Name("codictate.dictation.stop"),

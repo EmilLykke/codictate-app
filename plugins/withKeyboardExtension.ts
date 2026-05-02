@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 /**
  * Expo config plugin: withKeyboardExtension
  *
@@ -28,8 +30,8 @@ import * as fs from "fs";
 // ---------------------------------------------------------------------------
 
 const EXT_NAME = "CodictateDictationKeyboard";
-const EXT_BUNDLE_ID = "com.emillo2003.codictate-app.keyboard";
-const APP_GROUP_ID = "group.com.emillo2003.codictate-app";
+const EXT_BUNDLE_ID = "app.codictate.keyboard";
+const APP_GROUP_ID = "group.app.codictate";
 const DEPLOYMENT_TARGET = "15.1";
 
 /** Keyboard extension: UI + App Group bridge only (no mic / no Whisper). */
@@ -45,7 +47,8 @@ const REMOVED_FROM_EXTENSION_SOURCES = [
   "ModelManager.swift",
 ];
 
-const HOST_SWIFT_DIR = "codictateapp";
+const HOST_SWIFT_SRC_DIR = "codictateapp"; // source in targets/
+// Destination folder inside ios/ is the Expo-generated project name (e.g. "Codictate")
 const HOST_RECORDER_FILE = "KeyboardHostRecorder.swift";
 
 const WIDGET_TARGET_NAME = "ExpoWidgetsTarget";
@@ -485,7 +488,7 @@ function findHostAppSourceGroupKey(
     if (key.endsWith("_comment")) continue;
     const fr = fileRefs[key] as { path?: string } | undefined;
     const p = (fr?.path ?? "").replace(/^"|"$/g, "");
-    if (p === "codictateapp/AppDelegate.swift") {
+    if (p === "AppDelegate.swift" || p.endsWith("/AppDelegate.swift")) {
       appDelegateUuid = key;
       break;
     }
@@ -609,25 +612,25 @@ function syncKeyboardExtensionAndWireHostTranscription(
   if (hostSourceGroup) {
     ensureSourceFileBuiltByMainAppTarget(
       project,
-      "codictateapp/WhisperBridge.mm",
+      `${appTargetName}/WhisperBridge.mm`,
       hostSourceGroup,
       appUuid,
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
-      "codictateapp/ModelManager.swift",
+      `${appTargetName}/ModelManager.swift`,
       hostSourceGroup,
       appUuid,
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
-      "codictateapp/DictationIntent.swift",
+      `${appTargetName}/DictationIntent.swift`,
       hostSourceGroup,
       appUuid,
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
-      "codictateapp/DictationActivityAttributes.swift",
+      `${appTargetName}/DictationActivityAttributes.swift`,
       hostSourceGroup,
       appUuid,
     );
@@ -682,7 +685,7 @@ function patchKeyboardExtensionBuildSettings(
     if (typeof cfg !== "object" || !cfg?.buildSettings) continue;
     const bs = cfg.buildSettings as Record<string, unknown>;
     const bid = String(bs.PRODUCT_BUNDLE_IDENTIFIER ?? "");
-    if (!bid.includes("codictate-app.keyboard")) continue;
+    if (!bid.includes("codictate.keyboard")) continue;
     delete bs.SWIFT_OBJC_BRIDGING_HEADER;
     bs.HEADER_SEARCH_PATHS = ['"$(inherited)"'];
     bs.FRAMEWORK_SEARCH_PATHS = ['"$(inherited)"'];
@@ -724,11 +727,12 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       const hostSrcDir = path.join(
         c.modRequest.projectRoot,
         "targets",
-        HOST_SWIFT_DIR,
+        HOST_SWIFT_SRC_DIR,
       );
+      const iosProjectName = c.modRequest.projectName ?? HOST_SWIFT_SRC_DIR;
       const hostDestDir = path.join(
         c.modRequest.platformProjectRoot,
-        HOST_SWIFT_DIR,
+        iosProjectName,
       );
       if (fs.existsSync(hostSrcDir)) {
         fs.mkdirSync(hostDestDir, { recursive: true });
@@ -745,14 +749,14 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           );
         }
         console.log(
-          `[withKeyboardExtension] Copied ${HOST_SWIFT_DIR} sources (except ${HOST_RECORDER_FILE}) → ios/${HOST_SWIFT_DIR}/`,
+          `[withKeyboardExtension] Copied ${HOST_SWIFT_SRC_DIR} sources (except ${HOST_RECORDER_FILE}) → ios/${iosProjectName}/`,
         );
       }
 
-      // Expo pins SWIFT_OBJC_BRIDGING_HEADER to codictateapp-Bridging-Header.h — import Whisper there.
+      // Expo pins SWIFT_OBJC_BRIDGING_HEADER to <ProjectName>-Bridging-Header.h — import Whisper there.
       const expoBridgingPath = path.join(
         hostDestDir,
-        "codictateapp-Bridging-Header.h",
+        `${iosProjectName}-Bridging-Header.h`,
       );
       if (fs.existsSync(expoBridgingPath)) {
         let bridging = fs.readFileSync(expoBridgingPath, "utf8");
@@ -805,7 +809,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         const attrsSrc = path.join(
           c.modRequest.projectRoot,
           "targets",
-          HOST_SWIFT_DIR,
+          HOST_SWIFT_SRC_DIR,
           attrsFile,
         );
         if (fs.existsSync(attrsSrc)) {
@@ -963,7 +967,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
             fs.readFileSync(recorderSrcPath, "utf8"),
           );
           ad = ensureAppDelegateRecorderImports(ad);
-          ad = `${ad.trimEnd()}\n\n${KEYBOARD_HOST_INJECT_BEGIN}\n// Source of truth: targets/${HOST_SWIFT_DIR}/${HOST_RECORDER_FILE}\n${body}\n${KEYBOARD_HOST_INJECT_END}\n`;
+          ad = `${ad.trimEnd()}\n\n${KEYBOARD_HOST_INJECT_BEGIN}\n// Source of truth: targets/${HOST_SWIFT_SRC_DIR}/${HOST_RECORDER_FILE}\n${body}\n${KEYBOARD_HOST_INJECT_END}\n`;
           console.log(
             "[withKeyboardExtension] Injected KeyboardHostRecorder into AppDelegate.swift",
           );

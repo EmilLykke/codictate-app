@@ -1,39 +1,64 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ensureModel, isModelReady, onModelProgress } from 'codictate-dictation'
+import { useFocusEffect } from '@react-navigation/native'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  ensureModel,
+  getPreferredModel,
+  isModelReady,
+  onModelProgress,
+  type ModelVariant,
+} from 'codictate-dictation'
 
 export type NativeModelState =
   | { status: 'checking' }
-  | { status: 'downloading'; progress: number }
-  | { status: 'ready' }
+  | { status: 'downloading'; progress: number; variant: ModelVariant }
+  | { status: 'ready'; variant: ModelVariant }
   | { status: 'error'; error: string; retry: () => void }
 
 export function useNativeModel(): NativeModelState {
   const [state, setState] = useState<NativeModelState>({ status: 'checking' })
 
-  const run = useCallback(() => {
-    setState({ status: 'checking' })
-    void isModelReady('base').then((ready) => {
-      if (ready) {
-        setState({ status: 'ready' })
-        return
-      }
-      setState({ status: 'downloading', progress: 0 })
-      void ensureModel('base')
-        .then(() => setState({ status: 'ready' }))
-        .catch((e: unknown) => {
-          const msg = e instanceof Error ? e.message : 'Failed to load model'
-          setState({ status: 'error', error: msg, retry: run })
-        })
-    })
-  }, []) // stable — only calls module-level imports
+  /** Tracks `onModelProgress` filtering and which variant triggered the current download UI. */
+  const activeVariantRef = useRef<ModelVariant>('base')
 
-  useEffect(() => {
-    run()
-  }, [run])
+  const run = useCallback(() => {
+    void getPreferredModel().then((variant) => {
+      activeVariantRef.current = variant
+      void isModelReady(variant).then((ready) => {
+        if (ready) {
+          setState((s) =>
+            s.status === 'ready' && s.variant === variant
+              ? s
+              : { status: 'ready', variant }
+          )
+          return
+        }
+
+        setState((s) => {
+          if (s.status === 'downloading' && s.variant === variant) return s
+          return { status: 'downloading', progress: 0, variant }
+        })
+
+        void ensureModel(variant)
+          .then(() => {
+            setState({ status: 'ready', variant })
+          })
+          .catch((e: unknown) => {
+            const msg = e instanceof Error ? e.message : 'Failed to load model'
+            setState({ status: 'error', error: msg, retry: run })
+          })
+      })
+    })
+  }, [])
+
+  useFocusEffect(
+    useCallback(() => {
+      run()
+    }, [run])
+  )
 
   useEffect(() => {
     const sub = onModelProgress((e) => {
-      if (e.variant !== 'base') return
+      if (e.variant !== activeVariantRef.current) return
       setState((prev) =>
         prev.status === 'downloading' ? { ...prev, progress: e.progress } : prev
       )

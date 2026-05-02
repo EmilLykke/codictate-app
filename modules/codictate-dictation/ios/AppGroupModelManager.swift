@@ -39,7 +39,7 @@ final class AppGroupModelManager {
 
     static let shared = AppGroupModelManager()
 
-    private let groupID = "group.com.emillo2003.codictate-app"
+    private let groupID = "group.app.codictate"
 
     private init() {}
 
@@ -86,21 +86,26 @@ final class AppGroupModelManager {
         let delegate = DownloadDelegate(
             onProgress: onProgress,
             onDone: { tempURL, error in
-                DispatchQueue.main.async {
-                    if let error { onComplete(.failure(error)); return }
-                    guard let tempURL else {
+                if let error { DispatchQueue.main.async { onComplete(.failure(error)) }; return }
+                guard let tempURL else {
+                    DispatchQueue.main.async {
                         onComplete(.failure(NSError(
                             domain: "AppGroupModelManager", code: 2,
                             userInfo: [NSLocalizedDescriptionKey: "Download produced no file."]
                         )))
-                        return
                     }
-                    do {
-                        try FileManager.default.moveItem(at: tempURL, to: destURL)
-                        onComplete(.success(destURL.path))
-                    } catch {
-                        onComplete(.failure(error))
+                    return
+                }
+                // File move must happen synchronously before this callback returns —
+                // iOS deletes the temp file the moment didFinishDownloadingTo exits.
+                do {
+                    if !FileManager.default.fileExists(atPath: container.path) {
+                        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
                     }
+                    try FileManager.default.moveItem(at: tempURL, to: destURL)
+                    DispatchQueue.main.async { onComplete(.success(destURL.path)) }
+                } catch {
+                    DispatchQueue.main.async { onComplete(.failure(error)) }
                 }
             }
         )
@@ -130,6 +135,7 @@ final class AppGroupModelManager {
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                         didFinishDownloadingTo location: URL) {
+            // Move the file synchronously here — iOS deletes it once this method returns.
             onDone(location, nil)
         }
 

@@ -7,7 +7,9 @@ import WidgetKit
 /// App-group keys shared between every dictation entry point: keyboard extension,
 /// host-app JS bridge, and the App Intent (Action Button / Shortcuts).
 enum KeyboardDictationBridge {
-    static let suiteName = "group.com.emillo2003.codictate-app"
+    static let suiteName = "group.app.codictate"
+    /// In-app dictation + Action Button / Shortcut. Must match CodictateDictationModule.
+    static let preferredVariantKey = "preferredWhisperVariant"
     static let phaseKey = "kbdDictationPhase"
     static let wavFileKey = "kbdDictationWavFile"
     static let errorKey = "kbdDictationHostError"
@@ -48,13 +50,30 @@ private final class KeyboardHostTranscription: NSObject {
         super.init()
     }
 
+    /// Keyboard sessions always use Tiny (extension memory budget). Other entry points
+    /// use the user preference from the App Group, falling back to any ready model.
+    private static func transcriptionVariant(source: String, suite: UserDefaults) -> ModelManager.Variant {
+        if source == KeyboardDictationBridge.sourceKeyboard {
+            return .tiny
+        }
+        let raw = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
+        let preferred: ModelManager.Variant = raw == "tiny" ? .tiny : .base
+        if ModelManager.shared.modelIsReady(for: preferred) {
+            return preferred
+        }
+        if ModelManager.shared.modelIsReady(for: .base) {
+            return .base
+        }
+        if ModelManager.shared.modelIsReady(for: .tiny) {
+            return .tiny
+        }
+        return preferred
+    }
+
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
-        // Source-aware model pick: keyboard target stays on Tiny (memory-tight extension),
-        // host / Action Button paths get Base for higher quality.
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
-        let variant: ModelManager.Variant =
-            source == KeyboardDictationBridge.sourceKeyboard ? .tiny : .base
+        let variant = Self.transcriptionVariant(source: source, suite: suite)
 
         ModelManager.shared.ensureModel(
             variant: variant,
@@ -252,10 +271,10 @@ final class DictationLiveActivityManager {
 
 // MARK: - Darwin IPC (keyboard extension → host app)
 
-private let kbdDarwinStartName    = "com.emillo2003.codictate.dictation.keyboard.start"
-private let kbdDarwinStopName     = "com.emillo2003.codictate.dictation.keyboard.stop"
-private let intentDarwinStartName = "com.emillo2003.codictate.dictation.intent.start"
-private let intentDarwinStopName  = "com.emillo2003.codictate.dictation.intent.stop"
+private let kbdDarwinStartName    = "app.codictate.dictation.keyboard.start"
+private let kbdDarwinStopName     = "app.codictate.dictation.keyboard.stop"
+private let intentDarwinStartName = "app.codictate.dictation.intent.start"
+private let intentDarwinStopName  = "app.codictate.dictation.intent.stop"
 
 // C-compatible callback — relays Darwin notification name to NSNotificationCenter on the main thread.
 // Must be file-scope (not a method) because CFNotificationCallback is a C function pointer.
@@ -672,7 +691,7 @@ final class KeyboardHostRecorder: NSObject {
     static func reloadControlWidget() {
         if #available(iOS 18.0, *) {
             ControlCenter.shared.reloadControls(
-                ofKind: "com.emillo2003.codictate.DictationControl"
+                ofKind: "app.codictate.DictationControl"
             )
         }
     }

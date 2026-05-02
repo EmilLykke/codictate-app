@@ -2,7 +2,7 @@ import UIKit
 import Foundation
 
 private enum KbdSuite {
-    static let suiteName        = "group.com.emillo2003.codictate-app"
+    static let suiteName        = "group.app.codictate"
     static let phaseKey         = "kbdDictationPhase"
     static let wavFileKey       = "kbdDictationWavFile"
     static let errorKey         = "kbdDictationHostError"
@@ -20,8 +20,8 @@ private enum KbdSuite {
 }
 
 // Darwin notification names (cross-process IPC to the host app).
-private let kbdDarwinStartName = "com.emillo2003.codictate.dictation.keyboard.start"
-private let kbdDarwinStopName  = "com.emillo2003.codictate.dictation.keyboard.stop"
+private let kbdDarwinStartName = "app.codictate.dictation.keyboard.start"
+private let kbdDarwinStopName  = "app.codictate.dictation.keyboard.stop"
 
 final class KeyboardViewController: UIInputViewController, DictationKeyboardViewDelegate {
 

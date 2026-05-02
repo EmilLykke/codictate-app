@@ -24,8 +24,11 @@ import { useTranscriptionLanguage } from '@/hooks/settings/transcription-languag
 import {
   deleteModel,
   ensureModel,
+  getPreferredModel,
   listModels,
+  setPreferredModel,
   type ModelInfo,
+  type ModelVariant,
 } from 'codictate-dictation'
 import { formatFileSize } from '@/utils/format-file-size/format-file-size'
 
@@ -50,26 +53,38 @@ const MODEL_LABELS: Record<string, string> = {
   tiny: 'Tiny (Q5_1)',
 }
 
-const MODEL_USE: Record<string, string> = {
-  base: 'In-app dictation',
-  tiny: 'Keyboard extension',
+const MODEL_TAGLINE: Record<string, string> = {
+  base: 'Higher quality (~143 MB)',
+  tiny: 'Faster · smaller (~57 MB)',
 }
 
 const ACTION_BUTTON_SHORTCUT_URL =
   'https://www.icloud.com/shortcuts/c1654e08dd004c469ae3175b880cd6f5'
 
+/** iOS Settings deep links are not officially supported; try common forms, then fall back. */
+const IOS_KEYBOARD_SETTINGS_URLS = [
+  'App-Prefs:root=General&path=Keyboard/KEYBOARDS',
+  'App-Prefs:root=General&path=Keyboard',
+] as const
+
 export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
   const [models, setModels] = useState<ModelInfo[]>([])
+  const [preferredVariant, setPreferredVariant] = useState<ModelVariant>('base')
 
-  const refreshModels = useCallback(() => {
-    void listModels().then(setModels)
+  const refreshSpeechModelsUi = useCallback(() => {
+    void Promise.all([listModels(), getPreferredModel()]).then(
+      ([list, pref]) => {
+        setModels(list)
+        setPreferredVariant(pref)
+      }
+    )
   }, [])
 
   useFocusEffect(
     useCallback(() => {
-      refreshModels()
-    }, [refreshModels])
+      refreshSpeechModelsUi()
+    }, [refreshSpeechModelsUi])
   )
 
   const confirmDelete = (row: ModelInfo) => {
@@ -84,12 +99,22 @@ export function ScreenSettings() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            void deleteModel(row.variant).then(() => {
-              void Haptics.notificationAsync(
-                Haptics.NotificationFeedbackType.Success
-              )
-              refreshModels()
-            })
+            void (async () => {
+              const wasPreferred = preferredVariant === row.variant
+              try {
+                await deleteModel(row.variant)
+                if (wasPreferred) {
+                  const listAfter = await listModels()
+                  const next = listAfter.find((m) => m.ready)?.variant
+                  if (next) await setPreferredModel(next)
+                }
+                await Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success
+                )
+              } finally {
+                refreshSpeechModelsUi()
+              }
+            })()
           },
         },
       ]
@@ -106,16 +131,23 @@ export function ScreenSettings() {
         {
           text: 'Download',
           onPress: () => {
-            void ensureModel(row.variant).then(() => {
-              void Haptics.notificationAsync(
+            void ensureModel(row.variant).then(async () => {
+              await Haptics.notificationAsync(
                 Haptics.NotificationFeedbackType.Success
               )
-              refreshModels()
+              refreshSpeechModelsUi()
             })
           },
         },
       ]
     )
+  }
+
+  const selectPreferredForInApp = (variant: ModelVariant) => {
+    const row = models.find((m) => m.variant === variant)
+    if (!row?.ready) return
+    void Haptics.selectionAsync()
+    void setPreferredModel(variant).then(() => setPreferredVariant(variant))
   }
 
   const openActionButtonShortcut = async () => {
@@ -129,6 +161,36 @@ export function ScreenSettings() {
       return
     }
     await Linking.openURL(ACTION_BUTTON_SHORTCUT_URL)
+  }
+
+  const openIosKeyboardSettings = async () => {
+    await Haptics.selectionAsync()
+    for (const url of IOS_KEYBOARD_SETTINGS_URLS) {
+      try {
+        if (await Linking.canOpenURL(url)) {
+          await Linking.openURL(url)
+          return
+        }
+      } catch {
+        /* try next URL */
+      }
+    }
+    for (const url of IOS_KEYBOARD_SETTINGS_URLS) {
+      try {
+        await Linking.openURL(url)
+        return
+      } catch {
+        /* try next URL */
+      }
+    }
+    try {
+      await Linking.openSettings()
+    } catch {
+      Alert.alert(
+        'Unable to open Settings',
+        'On your device, open Settings, then General, Keyboard, Keyboards, and add Codictate.'
+      )
+    }
   }
 
   return (
@@ -174,30 +236,25 @@ export function ScreenSettings() {
             <Text style={styles.sectionLabel} selectable>
               Dictation keyboard (iOS)
             </Text>
-            <Text style={styles.hint} selectable>
-              Add <Text style={styles.stepsEm}>Codictate</Text> under Settings ›
-              General › Keyboard › Keyboards. It includes a normal QWERTY row
-              for typing. The microphone cannot run inside the extension:
-              dictation opens the main app to record, then transcribes on the
-              device while you switch back (background audio keeps the session
-              alive).
-            </Text>
-            <Text style={styles.stepsList} selectable>
-              1. Enable the keyboard and{' '}
-              <Text style={styles.stepsEm}>Allow Full Access</Text>
-              {'\n'}
-              2. First tap: opens Codictate to start recording - return to your
-              app
-              {'\n'}
-              3. Second tap: stop; text is inserted into the field (also copied
-              to the clipboard). The small (Tiny) model in shared storage must
-              be present - open Codictate on Wi-Fi once if the keyboard asks to
-              download it
-              {'\n'}
-              4. You can still dictate inside Codictate and use{' '}
-              <Text style={styles.stepsEm}>Copy</Text> /{' '}
-              <Text style={styles.stepsEm}>Share</Text> as before
-            </Text>
+            <Pressable
+              onPress={() => void openIosKeyboardSettings()}
+              style={({ pressed }) => [
+                styles.shortcutButton,
+                pressed ? styles.rowPressed : null,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open Settings to Keyboards"
+            >
+              <Image
+                source="sf:keyboard"
+                style={styles.shortcutIcon}
+                contentFit="contain"
+                tintColor="#000000"
+              />
+              <Text style={styles.shortcutButtonText}>
+                Open Keyboards in Settings
+              </Text>
+            </Pressable>
           </SectionCard>
         </>
       ) : null}
@@ -234,48 +291,78 @@ export function ScreenSettings() {
           Speech models
         </Text>
         <Text style={styles.subHint} selectable>
-          Stored in the shared App Group container so both the main app and
-          keyboard extension can access them.
+          Stored in the shared App Group so the main app and keyboard can share
+          files. Tap an installed row to choose the model for dictation inside
+          this app and the Action Button shortcut (the keyboard always uses Tiny
+          on the device).
         </Text>
 
-        {models.map((row) => (
-          <View key={row.variant} style={styles.modelRow}>
-            <View style={styles.modelInfo}>
-              <Text style={styles.modelTitle} selectable>
-                {MODEL_LABELS[row.variant] ?? row.variant}
-              </Text>
-              <Text style={styles.modelMeta} selectable>
-                {MODEL_USE[row.variant] ?? ''}
-                {row.ready
-                  ? ` · ${formatFileSize(row.size)}`
-                  : ' · Not downloaded'}
-              </Text>
+        {models.map((row) => {
+          const label = MODEL_LABELS[row.variant] ?? row.variant
+          const active = row.ready && preferredVariant === row.variant
+          return (
+            <View key={row.variant} style={[styles.modelRow]}>
+              <Pressable
+                onPress={() => selectPreferredForInApp(row.variant)}
+                disabled={!row.ready}
+                style={[
+                  styles.modelSelectHit,
+                  row.ready ? null : styles.modelSelectDisabled,
+                  active ? styles.modelSelectActive : null,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`Use ${label} for in-app dictation`}
+                accessibilityState={{ selected: active, disabled: !row.ready }}
+              >
+                <View style={styles.modelInfo}>
+                  <Text style={styles.modelTitle} selectable>
+                    {label}
+                  </Text>
+                  <Text style={styles.modelMeta} selectable>
+                    {MODEL_TAGLINE[row.variant] ?? ''}
+                    {active ? ' · Active (in-app / Action Button)' : ''}
+                    {row.ready
+                      ? ` · ${formatFileSize(row.size)}`
+                      : ' · Not downloaded'}
+                  </Text>
+                </View>
+              </Pressable>
+              <View style={styles.modelCheckWrap}>
+                {active ? (
+                  <Image
+                    source="sf:checkmark.circle.fill"
+                    style={styles.modelCheckIcon}
+                    contentFit="contain"
+                    tintColor={appColors.foreground}
+                  />
+                ) : null}
+              </View>
+              {row.ready ? (
+                <Pressable
+                  onPress={() => confirmDelete(row)}
+                  style={styles.deleteHit}
+                  accessibilityLabel={`Delete ${label}`}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.deleteLabel} selectable>
+                    Delete
+                  </Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => confirmRedownload(row)}
+                  style={styles.deleteHit}
+                  accessibilityLabel={`Download ${label}`}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.downloadLabel} selectable>
+                    Download
+                  </Text>
+                </Pressable>
+              )}
             </View>
-            {row.ready ? (
-              <Pressable
-                onPress={() => confirmDelete(row)}
-                style={styles.deleteHit}
-                accessibilityLabel={`Delete ${MODEL_LABELS[row.variant] ?? row.variant}`}
-                accessibilityRole="button"
-              >
-                <Text style={styles.deleteLabel} selectable>
-                  Delete
-                </Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                onPress={() => confirmRedownload(row)}
-                style={styles.deleteHit}
-                accessibilityLabel={`Download ${MODEL_LABELS[row.variant] ?? row.variant}`}
-                accessibilityRole="button"
-              >
-                <Text style={styles.downloadLabel} selectable>
-                  Download
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        ))}
+          )
+        })}
       </SectionCard>
     </ScrollView>
   )
@@ -316,13 +403,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     textTransform: 'uppercase',
     color: appColors.foregroundSubtle,
-  },
-  keyboardSetupRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    marginTop: 4,
   },
   rowPressed: {
     opacity: 0.72,
@@ -379,18 +459,6 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: appColors.foregroundMuted,
   },
-  stepsList: {
-    fontFamily: appFontFamily.sans,
-    fontSize: 13,
-    lineHeight: 20,
-    color: appColors.foregroundMuted,
-    marginTop: 4,
-  },
-  stepsEm: {
-    fontFamily: appFontFamily.sans,
-    fontWeight: '600',
-    color: appColors.foreground,
-  },
   subHint: {
     fontFamily: appFontFamily.sans,
     fontSize: 13,
@@ -410,10 +478,33 @@ const styles = StyleSheet.create({
   modelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
+    gap: 6,
+    paddingVertical: 2,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(255,255,255,0.12)',
+  },
+  modelSelectHit: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginVertical: 2,
+  },
+  modelSelectDisabled: {
+    opacity: 0.62,
+  },
+  modelSelectActive: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  modelCheckWrap: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modelCheckIcon: {
+    width: 22,
+    height: 22,
   },
   modelInfo: {
     flex: 1,

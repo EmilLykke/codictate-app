@@ -3,9 +3,8 @@ import Foundation
 /// Downloads and locates Whisper GGML models in the App Group container.
 ///
 /// Two models live side-by-side:
-///   • `tiny`  (~57 MB) — used by the keyboard extension and any keyboard-source dictation
-///                        (extension memory is tight, can't load Base)
-///   • `base`  (~143 MB) — used by host-app dictation (in-app + Action Button) for higher quality
+///   • `tiny`  (~57 MB) — always used for keyboard-source transcription (memory budget)
+///   • `base`  (~143 MB) — optional; in-app and Action Button use the preferred model when ready
 ///
 /// Both download into the shared App Group so the keyboard extension can read either one.
 final class ModelManager {
@@ -44,15 +43,14 @@ final class ModelManager {
 
     static let shared = ModelManager()
 
-    private let groupID = "group.com.emillo2003.codictate-app"
+    private let groupID = "group.app.codictate"
 
     private init() {}
 
     // MARK: - Public API
 
-    /// Default model used by `KeyboardHostTranscription`. Stays `.tiny` for backward
-    /// compatibility with the keyboard handoff path; host/intent paths call
-    /// `ensureModel(variant:...)` explicitly with `.base`.
+    /// Default model used when only the legacy `modelFilePath` property is read.
+    /// Host / intent paths use `transcriptionVariant(...)` and the App Group preference.
     var modelFilePath: String? {
         modelFilePath(for: .tiny)
     }
@@ -111,24 +109,26 @@ final class ModelManager {
         let delegate = DownloadDelegate(
             onProgress: onProgress,
             onDone: { tempURL, error in
-                DispatchQueue.main.async {
-                    if let error {
-                        onComplete(.failure(error))
-                        return
-                    }
-                    guard let tempURL else {
+                if let error { DispatchQueue.main.async { onComplete(.failure(error)) }; return }
+                guard let tempURL else {
+                    DispatchQueue.main.async {
                         onComplete(.failure(NSError(
                             domain: "ModelManager", code: 2,
                             userInfo: [NSLocalizedDescriptionKey: "Download produced no file."]
                         )))
-                        return
                     }
-                    do {
-                        try FileManager.default.moveItem(at: tempURL, to: destPath)
-                        onComplete(.success(destPath.path))
-                    } catch {
-                        onComplete(.failure(error))
+                    return
+                }
+                // File move must happen synchronously before this callback returns —
+                // iOS deletes the temp file the moment didFinishDownloadingTo exits.
+                do {
+                    if !FileManager.default.fileExists(atPath: container.path) {
+                        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
                     }
+                    try FileManager.default.moveItem(at: tempURL, to: destPath)
+                    DispatchQueue.main.async { onComplete(.success(destPath.path)) }
+                } catch {
+                    DispatchQueue.main.async { onComplete(.failure(error)) }
                 }
             }
         )

@@ -52,6 +52,8 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   ensureModel(variant?: ModelVariant): Promise<void>;
   deleteModel(variant?: ModelVariant): Promise<void>;
   listModels(): Promise<ModelInfo[]>;
+  getPreferredModel(): Promise<ModelVariant>;
+  setPreferredModel(variant: ModelVariant): Promise<void>;
 }
 
 const Native =
@@ -126,4 +128,13 @@ export async function deleteModel(
 
 export async function listModels(): Promise<ModelInfo[]> {
   return Native.listModels();
+}
+
+export async function getPreferredModel(): Promise<ModelVariant> {
+  const v = await Native.getPreferredModel();
+  return v === "tiny" ? "tiny" : "base";
+}
+
+export async function setPreferredModel(variant: ModelVariant): Promise<void> {
+  return Native.setPreferredModel(variant);
 }
