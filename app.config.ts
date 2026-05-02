@@ -4,7 +4,7 @@ import withKeyboardExtension from "./plugins/withKeyboardExtension";
 
 const config: ExpoConfig = {
   name: "Codictate",
-  slug: "codictate-app",
+  slug: "codictate",
   version: "1.0.0",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
