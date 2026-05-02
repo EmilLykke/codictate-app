@@ -18,6 +18,8 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     private static let sourceKey = "kbdDictationSource"
     private static let errorKey = "kbdDictationHostError"
     private static let transcriptKey = "kbdTranscript"
+    private static let sourceKeyboard = "keyboard"
+    private static let sourceIntent = "intent"
     private static let darwinStart = "app.codictate.dictation.intent.start"
     private static let darwinStop = "app.codictate.dictation.intent.stop"
 
@@ -30,43 +32,57 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
         }
         suite.synchronize()
         let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
-        NSLog("[DictationIntent] phase=\(phase)")
+        let source = suite.string(forKey: Self.sourceKey) ?? ""
+        NSLog("[DictationIntent] phase=\(phase), source=\(source)")
 
         switch phase {
-        case "start", "recording":
-            NSLog("[DictationIntent] → stopping")
-            suite.set("stop_requested", forKey: Self.phaseKey)
-            suite.synchronize()
-            postDarwin(Self.darwinStop)
-            let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
+        case "start":
+            if source == Self.sourceKeyboard && !KeyboardHostRecorder.shared.hasActiveRecording() {
+                NSLog("[DictationIntent] stale keyboard start detected; replacing with intent start")
+                await startNewSession(suite)
+            } else {
+                NSLog("[DictationIntent] stopping pending start")
+                let transcript = await stopCurrentSession(suite)
+                return .result(value: transcript ?? "")
+            }
+
+        case "recording":
+            NSLog("[DictationIntent] stopping recording")
+            let transcript = await stopCurrentSession(suite)
             return .result(value: transcript ?? "")
 
         case "stop_requested", "processing":
-            NSLog("[DictationIntent] → already stopping/processing")
+            NSLog("[DictationIntent] already stopping/processing")
 
         default:
-            NSLog("[DictationIntent] → starting")
-
-            // 1. Write state to App Group (safe, no crash risk)
-            let filename = "intent-\(UUID().uuidString).wav"
-            suite.set("start", forKey: Self.phaseKey)
-            suite.set(filename, forKey: Self.wavFileKey)
-            suite.set("intent", forKey: Self.sourceKey)
-            suite.removeObject(forKey: Self.errorKey)
-            suite.removeObject(forKey: Self.transcriptKey)
-            suite.synchronize()
-
-            // 2. Post Darwin notification for host app
-            postDarwin(Self.darwinStart)
-
-            // 3. Start recording synchronously. The recorder starts/reuses the
-            // Live Activity before audio activation so the Dynamic Island is live immediately.
-            await MainActor.run {
-                KeyboardHostRecorder.shared.beginRecordingIfPending()
-            }
+            NSLog("[DictationIntent] starting")
+            await startNewSession(suite)
         }
 
         return .result(value: "")
+    }
+
+    private func startNewSession(_ suite: UserDefaults) async {
+        let filename = "intent-\(UUID().uuidString).wav"
+        suite.set("start", forKey: Self.phaseKey)
+        suite.set(filename, forKey: Self.wavFileKey)
+        suite.set(Self.sourceIntent, forKey: Self.sourceKey)
+        suite.removeObject(forKey: Self.errorKey)
+        suite.removeObject(forKey: Self.transcriptKey)
+        suite.synchronize()
+
+        postDarwin(Self.darwinStart)
+
+        await MainActor.run {
+            KeyboardHostRecorder.shared.beginRecordingIfPending()
+        }
+    }
+
+    private func stopCurrentSession(_ suite: UserDefaults) async -> String? {
+        suite.set("stop_requested", forKey: Self.phaseKey)
+        suite.synchronize()
+        postDarwin(Self.darwinStop)
+        return await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
     }
 
     private func postDarwin(_ name: String) {

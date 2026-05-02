@@ -702,6 +702,10 @@ final class KeyboardHostRecorder: NSObject {
         return suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
     }
 
+    func hasActiveRecording() -> Bool {
+        recorder?.isRecording == true
+    }
+
     // MARK: - Control Widget
 
     static func reloadControlWidget() {
