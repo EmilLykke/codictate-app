@@ -14,6 +14,7 @@ const config: ExpoConfig = {
     icon: "./assets/codictate.icon",
     bundleIdentifier: "app.codictate",
     infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription:
         "Codictate uses the microphone to record your voice for on-device transcription.",
       UIBackgroundModes: ["audio"],
@@ -37,6 +38,28 @@ const config: ExpoConfig = {
   extra: {
     eas: {
       projectId: "6d9b2adc-0482-4953-b3ec-8ea381f454e0",
+      build: {
+        experimental: {
+          ios: {
+            appExtensions: [
+              {
+                targetName: "CodictateDictationKeyboard",
+                bundleIdentifier: "app.codictate.keyboard",
+                entitlements: {
+                  "com.apple.security.application-groups": ["group.app.codictate"],
+                },
+              },
+              {
+                targetName: "ExpoWidgetsTarget",
+                bundleIdentifier: "app.codictate.ExpoWidgetsTarget",
+                entitlements: {
+                  "com.apple.security.application-groups": ["group.app.codictate"],
+                },
+              },
+            ],
+          },
+        },
+      },
     },
   },
   plugins: [
