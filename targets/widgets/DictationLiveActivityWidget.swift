@@ -3,6 +3,38 @@ import SwiftUI
 import WidgetKit
 
 @available(iOS 16.1, *)
+private struct ProgressRing: View {
+    let progress: Double
+    let lineWidth: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.22), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(Color.white, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.easeInOut(duration: 0.35), value: progress)
+        }
+    }
+}
+
+// 0→0.95 over 15 s while processing; 1.0 when ready; 0 otherwise.
+@available(iOS 16.1, *)
+private func processingProgress(for state: DictationActivityAttributes.ContentState, at date: Date) -> Double {
+    switch state.phase {
+    case "processing":
+        guard let start = state.processingStartDate else { return 0.0 }
+        return min(date.timeIntervalSince(start) / 15.0, 0.95)
+    case "ready":
+        return 1.0
+    default:
+        return 0.0
+    }
+}
+
+@available(iOS 16.1, *)
 struct DictationLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DictationActivityAttributes.self) { context in
@@ -33,8 +65,13 @@ struct DictationLiveActivityWidget: Widget {
                                 .foregroundColor(.white)
                                 .monospacedDigit()
                         } else if context.state.phase == "processing" {
-                            ProgressView()
-                                .tint(.white)
+                            TimelineView(.periodic(from: context.state.processingStartDate ?? Date(), by: 0.5)) { tl in
+                                ProgressRing(
+                                    progress: processingProgress(for: context.state, at: tl.date),
+                                    lineWidth: 3
+                                )
+                                .frame(width: 28, height: 28)
+                            }
                         } else if context.state.phase == "ready" {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
@@ -62,9 +99,13 @@ struct DictationLiveActivityWidget: Widget {
                             .frame(width: 32)
                     }
                 } else if context.state.phase == "processing" {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(0.8)
+                    TimelineView(.periodic(from: context.state.processingStartDate ?? Date(), by: 0.5)) { tl in
+                        ProgressRing(
+                            progress: processingProgress(for: context.state, at: tl.date),
+                            lineWidth: 2.5
+                        )
+                        .frame(width: 20, height: 20)
+                    }
                 } else if context.state.phase == "ready" {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
@@ -111,8 +152,13 @@ private struct DictationBannerView: View {
             }
             Spacer()
             if state.phase == "processing" {
-                ProgressView()
-                    .tint(.white)
+                TimelineView(.periodic(from: state.processingStartDate ?? Date(), by: 0.5)) { tl in
+                    ProgressRing(
+                        progress: processingProgress(for: state, at: tl.date),
+                        lineWidth: 3
+                    )
+                    .frame(width: 28, height: 28)
+                }
             } else if state.phase == "ready" {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.white)

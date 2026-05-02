@@ -158,7 +158,7 @@ function SetupScreen(props: { model: SetupModelInput }) {
   const isDownloading = model.status === 'downloading'
   const progress = isDownloading ? model.progress : 0
   const pct = Math.round(progress * 100)
-  const approxMb = isDownloading && model.variant === 'small' ? 181 : 57
+  const approxMb = isDownloading && model.variant === 'small' ? 181 : 142
 
   return (
     <View style={styles.centeredFill}>

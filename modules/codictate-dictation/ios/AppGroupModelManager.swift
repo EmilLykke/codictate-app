@@ -31,7 +31,7 @@ final class AppGroupModelManager {
 
         var minBytes: Int64 {
             switch self {
-            case .base: return 52 * 1024 * 1024
+            case .base: return 50 * 1024 * 1024
             case .small: return 160 * 1024 * 1024
             }
         }

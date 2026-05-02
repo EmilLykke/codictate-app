@@ -77,7 +77,9 @@ export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
   const [models, setModels] = useState<ModelInfo[]>([])
   const [preferredVariant, setPreferredVariant] = useState<ModelVariant>('base')
-  const [downloadProgress, setDownloadProgress] = useState<Partial<Record<ModelVariant, number>>>({})
+  const [downloadProgress, setDownloadProgress] = useState<
+    Partial<Record<ModelVariant, number>>
+  >({})
 
   useEffect(() => {
     const sub = onModelProgress((e) => {
@@ -332,7 +334,9 @@ export function ScreenSettings() {
                 disabled={!row.ready || isDownloading}
                 style={[
                   styles.modelSelectHit,
-                  row.ready && !isDownloading ? null : styles.modelSelectDisabled,
+                  row.ready && !isDownloading
+                    ? null
+                    : styles.modelSelectDisabled,
                   active ? styles.modelSelectActive : null,
                 ]}
                 accessibilityRole="button"
@@ -352,7 +356,13 @@ export function ScreenSettings() {
                 {isDownloading ? (
                   <View style={styles.progressTrack}>
                     <View
-                      style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` as `${number}%` }]}
+                      style={[
+                        styles.progressFill,
+                        {
+                          width:
+                            `${Math.round(progress * 100)}%` as `${number}%`,
+                        },
+                      ]}
                     />
                   </View>
                 ) : null}

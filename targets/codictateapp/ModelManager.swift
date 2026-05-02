@@ -3,8 +3,8 @@ import Foundation
 /// Downloads and locates Whisper GGML models in the App Group container.
 ///
 /// Two models available:
-///   • `base`  (~57 MB)  — smallest; always used for keyboard-source transcription
-///   • `small` (~181 MB) — good balance of speed and quality
+///   • `base`  (~57 MB)  — Q5_1 quantized; always used for keyboard-source transcription
+///   • `small` (~181 MB) — Q5_1 quantized; good balance of speed and quality
 ///
 /// Both download into the shared App Group so the keyboard extension can read them.
 final class ModelManager {
@@ -35,7 +35,7 @@ final class ModelManager {
 
         var minBytes: Int64 {
             switch self {
-            case .base: return 52 * 1024 * 1024
+            case .base: return 50 * 1024 * 1024
             case .small: return 160 * 1024 * 1024
             }
         }

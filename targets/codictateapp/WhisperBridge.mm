@@ -144,6 +144,7 @@ static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
         params.print_realtime   = false;
         params.print_timestamps = false;
         params.language         = lang.UTF8String;
+        params.translate        = false;
         params.n_threads        = 4;
         params.single_segment   = false;
         params.no_context       = true;

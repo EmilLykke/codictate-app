@@ -43,6 +43,19 @@ Whenever you add, remove, or modify a model variant, update all three:
 
 The `Variant` enum uses explicit rawValues so the JS-facing string matches (`largeV3Turbo = "large-v3-turbo"`).
 
+## DictationActivityAttributes — three files that must stay in sync
+
+Whenever you modify `ContentState` (e.g. adding a field), update all three:
+
+1. `targets/codictateapp/DictationActivityAttributes.swift` — source of truth
+2. `ios/Codictate/DictationActivityAttributes.swift` — main app target copy
+3. `ios/ExpoWidgetsTarget/DictationActivityAttributes.swift` — widget target copy
+
+## DictationLiveActivityWidget — two files that must stay in sync
+
+1. `targets/widgets/DictationLiveActivityWidget.swift` — source of truth
+2. `ios/ExpoWidgetsTarget/DictationLiveActivityWidget.swift` — compiled widget target copy
+
 ## codictate-dictation Expo module
 
 Local module at `modules/codictate-dictation/`. Declared as `"codictate-dictation": "file:./modules/codictate-dictation"` in `package.json`.

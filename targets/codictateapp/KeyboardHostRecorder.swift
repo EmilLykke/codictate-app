@@ -100,8 +100,7 @@ private final class KeyboardHostTranscription: NSObject {
                         }
                         self.loadedModelPath = modelPath
                     }
-                    let lang = Self.currentWhisperLanguageTag()
-                    self.bridge.transcribeWavFile(wavPath, language: lang) { transcript, errorMsg in
+                    self.bridge.transcribeWavFile(wavPath, language: "auto") { transcript, errorMsg in
                         if let text = transcript, !text.isEmpty {
                             let isIntentSession = source == KeyboardDictationBridge.sourceIntent
                             if source != KeyboardDictationBridge.sourceKeyboard {
@@ -164,13 +163,6 @@ private final class KeyboardHostTranscription: NSObject {
         }
     }
 
-    private static func currentWhisperLanguageTag() -> String? {
-        if #available(iOS 16, *) {
-            Locale.current.language.languageCode?.identifier
-        } else {
-            Locale.current.languageCode
-        }
-    }
 }
 
 // MARK: - Live Activity Manager
@@ -224,7 +216,8 @@ final class DictationLiveActivityManager {
 
         let state = DictationActivityAttributes.ContentState(
             phase: "processing",
-            startDate: recordingStartDate ?? Date()
+            startDate: recordingStartDate ?? Date(),
+            processingStartDate: Date()
         )
         currentActivityID = activity.id
         Task {
@@ -255,9 +248,17 @@ final class DictationLiveActivityManager {
             activitiesToEnd = Activity<DictationActivityAttributes>.activities
         }
 
+        // Pass the "ready" state so the ring shows as fully closed before iOS dismisses it.
+        let finalState = DictationActivityAttributes.ContentState(
+            phase: "ready",
+            startDate: recordingStartDate ?? Date()
+        )
         for activity in activitiesToEnd {
             Task {
-                await activity.end(nil, dismissalPolicy: .immediate)
+                await activity.end(
+                    ActivityContent(state: finalState, staleDate: nil),
+                    dismissalPolicy: .default
+                )
                 NSLog("[LiveActivity] Ended id=\(activity.id)")
             }
         }
