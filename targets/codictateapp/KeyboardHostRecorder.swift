@@ -50,22 +50,21 @@ private final class KeyboardHostTranscription: NSObject {
         super.init()
     }
 
-    /// Keyboard sessions always use Tiny (extension memory budget). Other entry points
+    /// Keyboard sessions always use Base (smallest model, fits extension memory budget). Other entry points
     /// use the user preference from the App Group, falling back to any ready model.
     private static func transcriptionVariant(source: String, suite: UserDefaults) -> ModelManager.Variant {
         if source == KeyboardDictationBridge.sourceKeyboard {
-            return .tiny
+            return .base
         }
         let raw = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
-        let preferred: ModelManager.Variant = raw == "tiny" ? .tiny : .base
+        let preferred = ModelManager.Variant(rawValue: raw) ?? .base
         if ModelManager.shared.modelIsReady(for: preferred) {
             return preferred
         }
-        if ModelManager.shared.modelIsReady(for: .base) {
-            return .base
-        }
-        if ModelManager.shared.modelIsReady(for: .tiny) {
-            return .tiny
+        for variant in [ModelManager.Variant.small, .base] {
+            if ModelManager.shared.modelIsReady(for: variant) {
+                return variant
+            }
         }
         return preferred
     }
@@ -120,7 +119,10 @@ private final class KeyboardHostTranscription: NSObject {
                             suite.synchronize()
                             KeyboardHostRecorder.reloadControlWidget()
                             if #available(iOS 16.2, *) {
-                                DictationLiveActivityManager.shared.end()
+                                DictationLiveActivityManager.shared.updateToReady()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    DictationLiveActivityManager.shared.end()
+                                }
                             }
                             // Include source so the JS bridge knows whether to handle the
                             // transcript or leave it to the keyboard extension (which inserts
@@ -228,6 +230,20 @@ final class DictationLiveActivityManager {
         Task {
             await activity.update(ActivityContent(state: state, staleDate: nil))
             NSLog("[LiveActivity] Updated to processing")
+        }
+    }
+
+    func updateToReady() {
+        guard let activity = trackedActivity() else { return }
+
+        let state = DictationActivityAttributes.ContentState(
+            phase: "ready",
+            startDate: recordingStartDate ?? Date()
+        )
+        currentActivityID = activity.id
+        Task {
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+            NSLog("[LiveActivity] Updated to ready")
         }
     }
 

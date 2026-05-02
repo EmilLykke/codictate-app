@@ -110,17 +110,17 @@ public final class CodictateDictationModule: Module {
         // MARK: - Model management
 
         AsyncFunction("isModelReady") { (variantStr: String?) -> Bool in
-            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             return AppGroupModelManager.shared.modelIsReady(for: variant)
         }
 
         AsyncFunction("ensureModel") { (variantStr: String?) async throws -> Void in
-            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             return try await withCheckedThrowingContinuation { continuation in
                 AppGroupModelManager.shared.ensureModel(
                     variant: variant,
                     onProgress: { [weak self] progress in
-                        self?.sendEvent("onModelProgress", ["variant": variantStr ?? "base", "progress": progress])
+                        self?.sendEvent("onModelProgress", ["variant": variant.rawValue, "progress": progress])
                     },
                     onComplete: { result in
                         switch result {
@@ -133,13 +133,13 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("deleteModel") { (variantStr: String?) -> Void in
-            let variant: AppGroupModelManager.Variant = variantStr == "tiny" ? .tiny : .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }
             try? FileManager.default.removeItem(atPath: path)
         }
 
         AsyncFunction("listModels") { () -> [[String: Any]] in
-            let variants: [AppGroupModelManager.Variant] = [.base, .tiny]
+            let variants: [AppGroupModelManager.Variant] = [.base, .small]
             return variants.map { variant in
                 let ready = AppGroupModelManager.shared.modelIsReady(for: variant)
                 var size: Int64 = 0
@@ -153,19 +153,14 @@ public final class CodictateDictationModule: Module {
 
         AsyncFunction("getPreferredModel") { () -> String in
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.base.rawValue }
-            let raw = suite.string(forKey: Self.preferredVariantKey)
-            guard raw == AppGroupModelManager.Variant.tiny.rawValue else {
-                return AppGroupModelManager.Variant.base.rawValue
-            }
-            return AppGroupModelManager.Variant.tiny.rawValue
+            let raw = suite.string(forKey: Self.preferredVariantKey) ?? AppGroupModelManager.Variant.base.rawValue
+            return AppGroupModelManager.Variant(rawValue: raw)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
         }
 
         AsyncFunction("setPreferredModel") { (variantStr: String?) -> Void in
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
             let trimmed = (variantStr ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let value = trimmed == AppGroupModelManager.Variant.tiny.rawValue
-                ? AppGroupModelManager.Variant.tiny.rawValue
-                : AppGroupModelManager.Variant.base.rawValue
+            let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
             suite.set(value, forKey: Self.preferredVariantKey)
             suite.synchronize()
         }

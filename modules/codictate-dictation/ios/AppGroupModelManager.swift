@@ -7,32 +7,32 @@ final class AppGroupModelManager {
 
     enum Variant: String {
         case base
-        case tiny
+        case small
 
         var filename: String {
             switch self {
-            case .tiny: return "ggml-tiny-q5_1.bin"
             case .base: return "ggml-base-q5_1.bin"
+            case .small: return "ggml-small-q5_1.bin"
             }
         }
 
         var url: URL {
             switch self {
-            case .tiny:
-                return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"
-                )!
             case .base:
                 return URL(string:
                     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+                )!
+            case .small:
+                return URL(string:
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"
                 )!
             }
         }
 
         var minBytes: Int64 {
             switch self {
-            case .tiny: return 20 * 1024 * 1024
             case .base: return 52 * 1024 * 1024
+            case .small: return 160 * 1024 * 1024
             }
         }
     }

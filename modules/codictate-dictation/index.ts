@@ -30,7 +30,7 @@ export type StateChangeEvent = {
 export type TranscriptEvent = { transcript: string };
 export type ErrorEvent = { message: string };
 
-export type ModelVariant = "base" | "tiny";
+export type ModelVariant = "base" | "small";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
@@ -132,7 +132,7 @@ export async function listModels(): Promise<ModelInfo[]> {
 
 export async function getPreferredModel(): Promise<ModelVariant> {
   const v = await Native.getPreferredModel();
-  return v === "tiny" ? "tiny" : "base";
+  return v === "small" ? "small" : "base";
 }
 
 export async function setPreferredModel(variant: ModelVariant): Promise<void> {

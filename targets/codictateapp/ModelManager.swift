@@ -2,41 +2,41 @@ import Foundation
 
 /// Downloads and locates Whisper GGML models in the App Group container.
 ///
-/// Two models live side-by-side:
-///   • `tiny`  (~57 MB) — always used for keyboard-source transcription (memory budget)
-///   • `base`  (~143 MB) — optional; in-app and Action Button use the preferred model when ready
+/// Two models available:
+///   • `base`  (~57 MB)  — smallest; always used for keyboard-source transcription
+///   • `small` (~181 MB) — good balance of speed and quality
 ///
-/// Both download into the shared App Group so the keyboard extension can read either one.
+/// Both download into the shared App Group so the keyboard extension can read them.
 final class ModelManager {
 
     enum Variant: String {
-        case tiny
         case base
+        case small
 
         var filename: String {
             switch self {
-            case .tiny: return "ggml-tiny-q5_1.bin"
             case .base: return "ggml-base-q5_1.bin"
+            case .small: return "ggml-small-q5_1.bin"
             }
         }
 
         var url: URL {
             switch self {
-            case .tiny:
-                return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"
-                )!
             case .base:
                 return URL(string:
                     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+                )!
+            case .small:
+                return URL(string:
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"
                 )!
             }
         }
 
         var minBytes: Int64 {
             switch self {
-            case .tiny: return 20 * 1024 * 1024
             case .base: return 52 * 1024 * 1024
+            case .small: return 160 * 1024 * 1024
             }
         }
     }
@@ -52,11 +52,11 @@ final class ModelManager {
     /// Default model used when only the legacy `modelFilePath` property is read.
     /// Host / intent paths use `transcriptionVariant(...)` and the App Group preference.
     var modelFilePath: String? {
-        modelFilePath(for: .tiny)
+        modelFilePath(for: .base)
     }
 
     var modelIsReady: Bool {
-        modelIsReady(for: .tiny)
+        modelIsReady(for: .base)
     }
 
     func modelFilePath(for variant: Variant) -> String? {
@@ -70,12 +70,12 @@ final class ModelManager {
         return size >= variant.minBytes
     }
 
-    /// Default ensure (Tiny) — kept for backward compatibility with keyboard flow.
+    /// Default ensure (Base) — kept for backward compatibility with keyboard flow.
     func ensureModel(
         onProgress: @escaping (Double) -> Void,
         onComplete: @escaping (Result<String, Error>) -> Void
     ) {
-        ensureModel(variant: .tiny, onProgress: onProgress, onComplete: onComplete)
+        ensureModel(variant: .base, onProgress: onProgress, onComplete: onComplete)
     }
 
     /// Pick a specific variant. Skips the network if the file already exists at >= minBytes.

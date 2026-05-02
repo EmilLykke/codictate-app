@@ -12,54 +12,69 @@ struct DictationLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 8) {
-                        Image(systemName: context.state.phase == "recording" ? "mic.fill" : "waveform")
-                            .foregroundColor(context.state.phase == "recording" ? .red : .white)
+                        Image(systemName: "button.programmable")
                             .font(.title2)
+                            .foregroundColor(.white)
+                        Text("Hold\nto stop")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.leading)
                     }
                     .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    VStack(alignment: .trailing, spacing: 2) {
+                    HStack(spacing: 12) {
                         if context.state.phase == "recording" {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 6, height: 6)
                             Text(timerInterval: context.state.startDate...Date.distantFuture, countsDown: false)
                                 .font(.system(.title3, design: .monospaced).weight(.medium))
                                 .foregroundColor(.white)
                                 .monospacedDigit()
-                        } else {
-                            Text("Transcribing")
-                                .font(.headline)
+                        } else if context.state.phase == "processing" {
+                            ProgressView()
+                                .tint(.white)
+                        } else if context.state.phase == "ready" {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
                                 .foregroundColor(.white)
                         }
-                        Text("Codictate")
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.5))
                     }
                     .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.phase == "recording" ? "Press Action Button to stop" : "Processing audio...")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.5))
-                        .padding(.bottom, 4)
+                    EmptyView()
                 }
             } compactLeading: {
-                Image(systemName: context.state.phase == "recording" ? "mic.fill" : "waveform")
-                    .foregroundColor(context.state.phase == "recording" ? .red : .white)
+                Image(systemName: "waveform")
+                    .foregroundColor(.white)
             } compactTrailing: {
                 if context.state.phase == "recording" {
-                    Text(timerInterval: context.state.startDate...Date.distantFuture, countsDown: false)
-                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text(timerInterval: context.state.startDate...Date.distantFuture, countsDown: false)
+                            .font(.system(.caption, design: .monospaced).weight(.semibold))
+                            .foregroundColor(.white)
+                            .monospacedDigit()
+                            .frame(width: 32)
+                    }
+                } else if context.state.phase == "processing" {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(0.8)
+                } else if context.state.phase == "ready" {
+                    Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
-                        .monospacedDigit()
-                        .frame(width: 48)
                 } else {
-                    Text("...")
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
                 }
             } minimal: {
-                Image(systemName: "mic.fill")
-                    .foregroundColor(.red)
+                Image(systemName: "waveform")
+                    .foregroundColor(.white)
             }
             .widgetURL(URL(string: "codictateapp://dictation"))
         }
@@ -72,24 +87,36 @@ private struct DictationBannerView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: state.phase == "recording" ? "mic.fill" : "waveform")
-                .foregroundColor(state.phase == "recording" ? .red : .white)
+            Image(systemName: "waveform")
+                .foregroundColor(.white)
                 .font(.title3)
             VStack(alignment: .leading, spacing: 2) {
-                Text(state.phase == "recording" ? "Recording" : "Transcribing...")
-                    .font(.headline)
-                    .foregroundColor(.white)
                 if state.phase == "recording" {
+                    Text("Recording")
+                        .font(.headline)
+                        .foregroundColor(.white)
                     Text(timerInterval: state.startDate...Date.distantFuture, countsDown: false)
                         .font(.system(.subheadline, design: .monospaced))
                         .foregroundColor(.white.opacity(0.7))
                         .monospacedDigit()
+                } else if state.phase == "processing" {
+                    Text("Transcribing...")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                } else if state.phase == "ready" {
+                    Text("Done")
+                        .font(.headline)
+                        .foregroundColor(.white)
                 }
             }
             Spacer()
-            Text("Codictate")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.4))
+            if state.phase == "processing" {
+                ProgressView()
+                    .tint(.white)
+            } else if state.phase == "ready" {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.white)
+            }
         }
         .padding(14)
     }

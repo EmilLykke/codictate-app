@@ -46,14 +46,18 @@ const config: ExpoConfig = {
                 targetName: "CodictateDictationKeyboard",
                 bundleIdentifier: "app.codictate.keyboard",
                 entitlements: {
-                  "com.apple.security.application-groups": ["group.app.codictate"],
+                  "com.apple.security.application-groups": [
+                    "group.app.codictate",
+                  ],
                 },
               },
               {
                 targetName: "ExpoWidgetsTarget",
                 bundleIdentifier: "app.codictate.ExpoWidgetsTarget",
                 entitlements: {
-                  "com.apple.security.application-groups": ["group.app.codictate"],
+                  "com.apple.security.application-groups": [
+                    "group.app.codictate",
+                  ],
                 },
               },
             ],

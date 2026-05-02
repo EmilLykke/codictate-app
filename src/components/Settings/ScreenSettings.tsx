@@ -4,7 +4,7 @@ import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import { Image } from 'expo-image'
 import { Link } from 'expo-router'
 import type { ReactNode } from 'react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
   Linking,
@@ -26,6 +26,7 @@ import {
   ensureModel,
   getPreferredModel,
   listModels,
+  onModelProgress,
   setPreferredModel,
   type ModelInfo,
   type ModelVariant,
@@ -50,16 +51,21 @@ function SectionCard({ children }: { children: ReactNode }) {
 
 const MODEL_LABELS: Record<string, string> = {
   base: 'Base (Q5_1)',
-  tiny: 'Tiny (Q5_1)',
+  small: 'Small (Q5_1)',
 }
 
 const MODEL_TAGLINE: Record<string, string> = {
-  base: 'Higher quality (~143 MB)',
-  tiny: 'Faster · smaller (~57 MB)',
+  base: 'Fastest · smallest (~57 MB)',
+  small: 'Good balance (~181 MB)',
+}
+
+const MODEL_SIZE_MB: Record<string, string> = {
+  base: '57',
+  small: '181',
 }
 
 const ACTION_BUTTON_SHORTCUT_URL =
-  'https://www.icloud.com/shortcuts/c1654e08dd004c469ae3175b880cd6f5'
+  'https://www.icloud.com/shortcuts/376647f0244646a6a181f8ba1fdfe4d1'
 
 /** iOS Settings deep links are not officially supported; try common forms, then fall back. */
 const IOS_KEYBOARD_SETTINGS_URLS = [
@@ -71,6 +77,14 @@ export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
   const [models, setModels] = useState<ModelInfo[]>([])
   const [preferredVariant, setPreferredVariant] = useState<ModelVariant>('base')
+  const [downloadProgress, setDownloadProgress] = useState<Partial<Record<ModelVariant, number>>>({})
+
+  useEffect(() => {
+    const sub = onModelProgress((e) => {
+      setDownloadProgress((prev) => ({ ...prev, [e.variant]: e.progress }))
+    })
+    return () => sub.remove()
+  }, [])
 
   const refreshSpeechModelsUi = useCallback(() => {
     void Promise.all([listModels(), getPreferredModel()]).then(
@@ -125,18 +139,27 @@ export function ScreenSettings() {
     const label = MODEL_LABELS[row.variant] ?? row.variant
     Alert.alert(
       'Download model?',
-      `Download ${label} now? This requires Wi-Fi and ~${row.variant === 'base' ? '143' : '57'} MB.`,
+      `Download ${label} now? This requires Wi-Fi and ~${MODEL_SIZE_MB[row.variant] ?? '?'} MB.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Download',
           onPress: () => {
-            void ensureModel(row.variant).then(async () => {
-              await Haptics.notificationAsync(
-                Haptics.NotificationFeedbackType.Success
-              )
-              refreshSpeechModelsUi()
-            })
+            const clearProgress = () =>
+              setDownloadProgress((prev) => {
+                const next = { ...prev }
+                delete next[row.variant]
+                return next
+              })
+            void ensureModel(row.variant)
+              .then(async () => {
+                clearProgress()
+                await Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success
+                )
+                refreshSpeechModelsUi()
+              })
+              .catch(clearProgress)
           },
         },
       ]
@@ -293,21 +316,23 @@ export function ScreenSettings() {
         <Text style={styles.subHint} selectable>
           Stored in the shared App Group so the main app and keyboard can share
           files. Tap an installed row to choose the model for dictation inside
-          this app and the Action Button shortcut (the keyboard always uses Tiny
+          this app and the Action Button shortcut (the keyboard always uses Base
           on the device).
         </Text>
 
         {models.map((row) => {
           const label = MODEL_LABELS[row.variant] ?? row.variant
           const active = row.ready && preferredVariant === row.variant
+          const progress = downloadProgress[row.variant]
+          const isDownloading = progress !== undefined
           return (
             <View key={row.variant} style={[styles.modelRow]}>
               <Pressable
                 onPress={() => selectPreferredForInApp(row.variant)}
-                disabled={!row.ready}
+                disabled={!row.ready || isDownloading}
                 style={[
                   styles.modelSelectHit,
-                  row.ready ? null : styles.modelSelectDisabled,
+                  row.ready && !isDownloading ? null : styles.modelSelectDisabled,
                   active ? styles.modelSelectActive : null,
                 ]}
                 accessibilityRole="button"
@@ -319,13 +344,18 @@ export function ScreenSettings() {
                     {label}
                   </Text>
                   <Text style={styles.modelMeta} selectable>
-                    {MODEL_TAGLINE[row.variant] ?? ''}
-                    {active ? ' · Active (in-app / Action Button)' : ''}
-                    {row.ready
-                      ? ` · ${formatFileSize(row.size)}`
-                      : ' · Not downloaded'}
+                    {isDownloading
+                      ? `Downloading… ${Math.round(progress * 100)}%`
+                      : `${MODEL_TAGLINE[row.variant] ?? ''}${active ? ' · Active (in-app / Action Button)' : ''}${row.ready ? ` · ${formatFileSize(row.size)}` : ' · Not downloaded'}`}
                   </Text>
                 </View>
+                {isDownloading ? (
+                  <View style={styles.progressTrack}>
+                    <View
+                      style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` as `${number}%` }]}
+                    />
+                  </View>
+                ) : null}
               </Pressable>
               <View style={styles.modelCheckWrap}>
                 {active ? (
@@ -337,7 +367,7 @@ export function ScreenSettings() {
                   />
                 ) : null}
               </View>
-              {row.ready ? (
+              {isDownloading ? null : row.ready ? (
                 <Pressable
                   onPress={() => confirmDelete(row)}
                   style={styles.deleteHit}
@@ -535,5 +565,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: appColors.foreground,
+  },
+  progressTrack: {
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: appColors.foreground,
   },
 })
