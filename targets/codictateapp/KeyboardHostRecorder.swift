@@ -89,10 +89,13 @@ private final class KeyboardHostTranscription: NSObject {
                             suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
                             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
                             suite.synchronize()
+                            // Include source so the JS bridge knows whether to handle the
+                            // transcript or leave it to the keyboard extension (which inserts
+                            // via textDocumentProxy, avoiding double-paste inside this app).
                             NotificationCenter.default.post(
                                 name: DictationNotification.transcriptReady,
                                 object: nil,
-                                userInfo: ["transcript": text]
+                                userInfo: ["transcript": text, "source": source]
                             )
                             NotificationCenter.default.post(
                                 name: DictationNotification.stateChanged,
@@ -121,8 +124,10 @@ private final class KeyboardHostTranscription: NSObject {
 
 // MARK: - Darwin IPC (keyboard extension → host app)
 
-private let kbdDarwinStartName = "com.emillo2003.codictate.dictation.keyboard.start"
-private let kbdDarwinStopName  = "com.emillo2003.codictate.dictation.keyboard.stop"
+private let kbdDarwinStartName    = "com.emillo2003.codictate.dictation.keyboard.start"
+private let kbdDarwinStopName     = "com.emillo2003.codictate.dictation.keyboard.stop"
+private let intentDarwinStartName = "com.emillo2003.codictate.dictation.intent.start"
+private let intentDarwinStopName  = "com.emillo2003.codictate.dictation.intent.stop"
 
 // C-compatible callback — relays Darwin notification name to NSNotificationCenter on the main thread.
 // Must be file-scope (not a method) because CFNotificationCallback is a C function pointer.
@@ -219,22 +224,26 @@ final class KeyboardHostRecorder: NSObject {
         // Dictate button is tapped — didBecomeActiveNotification never fires then.
         let darwinCenter = CFNotificationCenterGetDarwinNotifyCenter()
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        CFNotificationCenterAddObserver(
-            darwinCenter, selfPtr, kbdDarwinCallback,
-            kbdDarwinStartName as CFString, nil, .deliverImmediately
-        )
-        CFNotificationCenterAddObserver(
-            darwinCenter, selfPtr, kbdDarwinCallback,
-            kbdDarwinStopName as CFString, nil, .deliverImmediately
-        )
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleDarwinStart),
-            name: NSNotification.Name(kbdDarwinStartName), object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleDarwinStop),
-            name: NSNotification.Name(kbdDarwinStopName), object: nil
-        )
+        for startName in [kbdDarwinStartName, intentDarwinStartName] {
+            CFNotificationCenterAddObserver(
+                darwinCenter, selfPtr, kbdDarwinCallback,
+                startName as CFString, nil, .deliverImmediately
+            )
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(handleDarwinStart),
+                name: NSNotification.Name(startName), object: nil
+            )
+        }
+        for stopName in [kbdDarwinStopName, intentDarwinStopName] {
+            CFNotificationCenterAddObserver(
+                darwinCenter, selfPtr, kbdDarwinCallback,
+                stopName as CFString, nil, .deliverImmediately
+            )
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(handleDarwinStop),
+                name: NSNotification.Name(stopName), object: nil
+            )
+        }
     }
 
     @objc private func handleStartNotification(_ note: Notification) {
@@ -270,7 +279,9 @@ final class KeyboardHostRecorder: NSObject {
         suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
         guard phase == KeyboardDictationBridge.phaseStart else { return }
-        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceKeyboard
+        // Source written by the sender (keyboard or intent); fall back to host so Whisper
+        // uses the Base model rather than the smaller Tiny model reserved for the keyboard.
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
         startSessionInternal(suite: suite, source: source)
     }
 
@@ -454,9 +465,18 @@ final class KeyboardHostRecorder: NSObject {
             self.beginRecording(suite: suite)
         }
 
-        if UIApplication.shared.applicationState == .active {
+        switch UIApplication.shared.applicationState {
+        case .active:
+            // Foreground — start immediately.
             attemptStart()
-        } else {
+        case .background:
+            // UIBackgroundModes:audio allows activating AVAudioSession and starting
+            // AVAudioRecorder without being in the foreground. beginRecording's error
+            // handling will call fail() if the session cannot be activated.
+            attemptStart()
+        case .inactive:
+            // App is mid-transition (e.g. being brought to foreground by the URL scheme).
+            // Wait for the active state to avoid racing with the audio session setup.
             activationObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.didBecomeActiveNotification,
                 object: nil,
@@ -465,6 +485,8 @@ final class KeyboardHostRecorder: NSObject {
                 self?.cancelActivationWait()
                 attemptStart()
             }
+        @unknown default:
+            attemptStart()
         }
     }
 
@@ -508,7 +530,10 @@ final class KeyboardHostRecorder: NSObject {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            // Do NOT call setActive(false, notifyOthersOnDeactivation) here.
+            // From background, that deactivates the session and lets other apps resume;
+            // iOS then refuses to give it back to a backgrounded app. Configure and
+            // activate directly — the UIBackgroundModes:audio entitlement allows this.
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,

@@ -198,9 +198,44 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     }
 
     private func checkPhase() {
-        guard let suite, case .recording = viewState else { return }
-        if suite.string(forKey: KbdSuite.phaseKey) == KbdSuite.phaseFailed {
-            viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
+        guard let suite else { return }
+        // Force-read latest cross-process writes from the host app.
+        suite.synchronize()
+        let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+
+        switch viewState {
+        case .idle:
+            // Detect sessions started externally (shortcut or in-app button).
+            switch phase {
+            case KbdSuite.phaseStart, KbdSuite.phaseRecording:
+                viewState = .recording
+            case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
+                viewState = .processing
+                startResultPolling()
+            case KbdSuite.phaseReady:
+                // Start + stop both happened before keyboard noticed — go straight to polling.
+                startResultPolling()
+            default:
+                break
+            }
+
+        case .recording:
+            // Stop was triggered externally (shortcut) — catch all transitions to processing/done.
+            switch phase {
+            case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing, KbdSuite.phaseReady:
+                viewState = .processing
+                startResultPolling()
+            case KbdSuite.phaseFailed:
+                viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
+            case KbdSuite.phaseIdle:
+                // Session was cancelled externally.
+                viewState = .idle
+            default:
+                break
+            }
+
+        default:
+            break
         }
     }
 

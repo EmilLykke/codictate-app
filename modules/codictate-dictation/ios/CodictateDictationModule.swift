@@ -70,9 +70,13 @@ public final class CodictateDictationModule: Module {
 
         AsyncFunction("consumeTranscript") { () -> String? in
             // Read + clear the App Group transcript. Used by JS to flush results
-            // produced while the app was suspended (e.g. keyboard or Action Button flow).
+            // produced while the app was suspended (e.g. Action Button flow).
+            // Keyboard sessions are excluded — the keyboard extension inserts the text
+            // via textDocumentProxy and clears the App Group itself.
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return nil }
             let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
+            let source = suite.string(forKey: Self.sourceKey) ?? "host"
+            guard source != "keyboard" else { return nil }
             guard phase == "ready", let text = suite.string(forKey: Self.transcriptKey), !text.isEmpty else {
                 return nil
             }
@@ -158,6 +162,11 @@ public final class CodictateDictationModule: Module {
             queue: .main
         ) { [weak self] note in
             guard let self else { return }
+            // Keyboard-sourced sessions insert via textDocumentProxy in the extension.
+            // Emitting onTranscript here too would cause double-paste when the keyboard
+            // is used inside this app.
+            let source = (note.userInfo?["source"] as? String) ?? "host"
+            guard source != "keyboard" else { return }
             let text = (note.userInfo?["transcript"] as? String) ?? ""
             self.sendEvent("onTranscript", ["transcript": text])
         }

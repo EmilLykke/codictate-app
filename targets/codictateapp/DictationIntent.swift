@@ -2,24 +2,26 @@ import AppIntents
 import Foundation
 
 /// Single toggle intent assignable to the Action Button (iPhone 15 Pro+) or to a Siri /
-/// Shortcuts trigger. Reads the App Group phase and either starts a session (foregrounding
-/// the app briefly to activate the audio session) or stops the in-flight session in place.
+/// Shortcuts trigger. Reads the App Group phase and either starts a session (opening the
+/// app to activate the audio session) or stops the in-flight session in place.
 ///
-/// The actual recording lives in `KeyboardHostRecorder` which observes App Group state and
-/// `UIApplication.didBecomeActiveNotification` — this intent's only job is to flip the
-/// phase + nudge the runtime.
+/// `openAppWhenRun = true` brings the app to the foreground without any confirmation dialog.
+/// A Darwin cross-process notification additionally handles the case where the app is
+/// already in the foreground (didBecomeActiveNotification never fires then).
 @available(iOS 16.4, *)
-struct DictationToggleIntent: AppIntent, ForegroundContinuableIntent {
+struct DictationToggleIntent: AppIntent {
     static var title: LocalizedStringResource = "Toggle Codictate Dictation"
     static var description = IntentDescription(
         "Start a Codictate dictation session, or stop the one currently running."
     )
 
-    /// Default: do not bring the app to the foreground. The start branch overrides this
-    /// at runtime via `requestToContinueInForeground()` when an audio session needs to spin up.
-    static var openAppWhenRun: Bool = false
+    // Opens the app to the foreground so the audio session can activate — iOS blocks
+    // new AVAudioSession activation from a suspended background process.
+    // After recording starts the Live Activity keeps the UI; the user can immediately
+    // press home and recording continues via UIBackgroundModes:audio.
+    static var openAppWhenRun: Bool = true
 
-    func perform() async throws -> some IntentResult {
+    func perform() async -> some IntentResult {
         guard let suite = UserDefaults(
             suiteName: "group.com.emillo2003.codictate-app"
         ) else {
@@ -30,20 +32,20 @@ struct DictationToggleIntent: AppIntent, ForegroundContinuableIntent {
 
         switch phase {
         case "start", "recording":
-            // Stop branch: phase flip is enough — KeyboardHostRecorder polls App Group
-            // every 150 ms and runs entirely in native code, so JS suspension is irrelevant.
+            // Stop: flip phase and signal the recorder via Darwin (cross-process).
             suite.set("stop_requested", forKey: "kbdDictationPhase")
             suite.synchronize()
+            postDarwin("com.emillo2003.codictate.dictation.intent.stop")
             return .result()
 
         case "stop_requested", "processing":
-            // Already wrapping up — leave it alone.
             return .result()
 
         default:
-            // Start branch: write the pending session and bring the app forward so the
-            // audio session can activate. After foreground continuation,
-            // `UIApplication.didBecomeActiveNotification` triggers KeyboardHostRecorder.
+            // Start: write pending session state, then signal via Darwin.
+            // `didBecomeActiveNotification` in the host app handles the start when the app
+            // comes to the foreground. The Darwin notification covers the rare case where the
+            // app is already active when the intent runs.
             let filename = "intent-\(UUID().uuidString).wav"
             suite.set("start", forKey: "kbdDictationPhase")
             suite.set(filename, forKey: "kbdDictationWavFile")
@@ -51,21 +53,17 @@ struct DictationToggleIntent: AppIntent, ForegroundContinuableIntent {
             suite.removeObject(forKey: "kbdDictationHostError")
             suite.removeObject(forKey: "kbdTranscript")
             suite.synchronize()
-
-            try await requestToContinueInForeground()
-
-            // Belt-and-suspenders: post the start notification too, in case the app was
-            // already active (no foreground transition fires) when the intent ran.
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: Notification.Name("codictate.dictation.start"),
-                    object: nil,
-                    userInfo: ["source": "intent"]
-                )
-            }
-
+            postDarwin("com.emillo2003.codictate.dictation.intent.start")
             return .result()
         }
+    }
+
+    private func postDarwin(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(rawValue: name as CFString),
+            nil, nil, true
+        )
     }
 }
 
