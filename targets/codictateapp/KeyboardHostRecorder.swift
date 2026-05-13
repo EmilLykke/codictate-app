@@ -337,6 +337,9 @@ final class KeyboardHostRecorder: NSObject {
             suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
             suite.synchronize()
             Self.reloadControlWidget()
+            if #available(iOS 16.2, *) {
+                DictationLiveActivityManager.shared.end()
+            }
         default:
             break
         }
@@ -422,6 +425,11 @@ final class KeyboardHostRecorder: NSObject {
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
         guard phase == KeyboardDictationBridge.phaseStart else { return }
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
+        // Intent-initiated starts are handled by beginRecordingIfPending called
+        // directly from DictationToggleIntent.perform(). Allowing this handler to
+        // race that call can cause a double-start or, if one path fails first, it
+        // changes the phase and prevents the other from recovering.
+        guard source != KeyboardDictationBridge.sourceIntent else { return }
         startSessionInternal(suite: suite, source: source)
     }
 

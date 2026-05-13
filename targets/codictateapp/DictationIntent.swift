@@ -20,8 +20,10 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     private static let transcriptKey = "kbdTranscript"
     private static let sourceKeyboard = "keyboard"
     private static let sourceIntent = "intent"
-    private static let darwinStart = "app.codictate.dictation.intent.start"
-    private static let darwinStop = "app.codictate.dictation.intent.stop"
+    // Darwin notification names kept as documentation; intents no longer post
+    // them because they run in-process and call KeyboardHostRecorder directly.
+    // The observers in KeyboardHostRecorder still listen for these names so that
+    // a future cross-process caller (e.g., keyboard extension) can use them.
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         NSLog("[DictationIntent] perform() entry")
@@ -39,7 +41,7 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
         case "start":
             if source == Self.sourceKeyboard && !KeyboardHostRecorder.shared.hasActiveRecording() {
                 NSLog("[DictationIntent] stale keyboard start detected; replacing with intent start")
-                await startNewSession(suite)
+                startNewSession(suite)
             } else {
                 NSLog("[DictationIntent] stopping pending start")
                 let transcript = await stopCurrentSession(suite)
@@ -56,24 +58,28 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
 
         default:
             NSLog("[DictationIntent] starting")
-            await startNewSession(suite)
+            startNewSession(suite)
         }
 
         return .result(value: "")
     }
 
-    private func startNewSession(_ suite: UserDefaults) async {
+    private func startNewSession(_ suite: UserDefaults) {
         let filename = "intent-\(UUID().uuidString).wav"
         suite.set("start", forKey: Self.phaseKey)
         suite.set(filename, forKey: Self.wavFileKey)
         suite.set(Self.sourceIntent, forKey: Self.sourceKey)
         suite.removeObject(forKey: Self.errorKey)
         suite.removeObject(forKey: Self.transcriptKey)
-        suite.synchronize()
+        // Skip synchronize() here: beginRecordingIfPending runs in the same
+        // process and reads from the in-memory UserDefaults cache. The cross-
+        // process flush is only needed for the keyboard extension path.
 
-        postDarwin(Self.darwinStart)
-
-        await MainActor.run {
+        // Fire-and-forget on the main thread so perform() returns instantly and
+        // the Shortcuts running indicator disappears right away. The recording
+        // will start on the next main run loop iteration; the Live Activity
+        // appears once the audio session is ready.
+        Task { @MainActor in
             KeyboardHostRecorder.shared.beginRecordingIfPending()
         }
     }
@@ -81,16 +87,11 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     private func stopCurrentSession(_ suite: UserDefaults) async -> String? {
         suite.set("stop_requested", forKey: Self.phaseKey)
         suite.synchronize()
-        postDarwin(Self.darwinStop)
+        // No Darwin notification: the intent calls requestStopAndWaitFromIntent
+        // directly. A Darwin stop would race handleDarwinStop, which calls
+        // processStopRequested(completion: nil), consuming the recorder before
+        // the intent's own completion handler can receive the transcript.
         return await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
-    }
-
-    private func postDarwin(_ name: String) {
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName(rawValue: name as CFString),
-            nil, nil, true
-        )
     }
 }
 
@@ -110,11 +111,6 @@ struct StopDictationIntent: AppIntent {
         if phase == "recording" || phase == "start" {
             suite.set("stop_requested", forKey: "kbdDictationPhase")
             suite.synchronize()
-            CFNotificationCenterPostNotification(
-                CFNotificationCenterGetDarwinNotifyCenter(),
-                CFNotificationName(rawValue: "app.codictate.dictation.intent.stop" as CFString),
-                nil, nil, true
-            )
             let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
             return .result(value: transcript ?? "")
         }
