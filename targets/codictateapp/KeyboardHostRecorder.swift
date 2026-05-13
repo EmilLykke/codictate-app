@@ -9,7 +9,7 @@ import WidgetKit
 enum KeyboardDictationBridge {
     static let suiteName = "group.app.codictate"
     /// In-app dictation + Action Button / Shortcut. Must match CodictateDictationModule.
-    static let preferredVariantKey = "preferredWhisperVariant"
+    static let preferredVariantKey = "preferredModelVariant"
     static let phaseKey = "kbdDictationPhase"
     static let wavFileKey = "kbdDictationWavFile"
     static let errorKey = "kbdDictationHostError"
@@ -41,110 +41,68 @@ enum DictationNotification {
     static let failed = Notification.Name("codictate.dictation.failed")
 }
 
-/// Native Whisper + model download for keyboard handoff (main app only).
-private final class KeyboardHostTranscription: NSObject {
-    static let shared = KeyboardHostTranscription()
-    private let bridge = WhisperBridge()
-    private var loadedModelPath: String?
-
-    private override init() {
-        super.init()
-    }
-
-    /// Keyboard sessions always use Base (smallest model, fits extension memory budget). Other entry points
-    /// use the user preference from the App Group, falling back to any ready model.
-    private static func transcriptionVariant(source: String, suite: UserDefaults) -> ModelManager.Variant {
-        if source == KeyboardDictationBridge.sourceKeyboard {
-            return .base
-        }
-        let raw = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
-        let preferred = ModelManager.Variant(rawValue: raw) ?? .base
-        if ModelManager.shared.modelIsReady(for: preferred) {
-            return preferred
-        }
-        for variant in [ModelManager.Variant.small, .base] {
-            if ModelManager.shared.modelIsReady(for: variant) {
-                return variant
-            }
-        }
-        return preferred
-    }
+/// Selects between ParakeetEngine and WhisperEngine based on the user's
+/// preferred variant stored in the App Group UserDefaults.
+private final class TranscriptionRouter {
+    static let shared = TranscriptionRouter()
+    private let parakeet = ParakeetEngine()
+    private let whisper = WhisperEngine()
 
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
-        let variant = Self.transcriptionVariant(source: source, suite: suite)
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "parakeet"
+        let engine: TranscriptionEngine = preferred == "base" ? whisper : parakeet
 
-        ModelManager.shared.ensureModel(
-            variant: variant,
-            onProgress: { _ in },
-            onComplete: { [weak self] result in
-                guard let self else {
-                    onComplete(nil)
-                    return
+        Task {
+            do {
+                let text = try await engine.transcribe(wavPath: wavPath)
+                await MainActor.run {
+                    guard !text.isEmpty else {
+                        KeyboardHostRecorder.shared.fail(suite, "No speech detected.")
+                        onComplete(nil)
+                        return
+                    }
+                    suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
+                    suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
+                    suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+                    suite.synchronize()
+                    KeyboardHostRecorder.reloadControlWidget()
+                    KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
+                        source,
+                        transcript: text,
+                        suite: suite
+                    )
+                    if #available(iOS 16.2, *) {
+                        DictationLiveActivityManager.shared.updateToReady()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            DictationLiveActivityManager.shared.end()
+                        }
+                    }
+                    NotificationCenter.default.post(
+                        name: DictationNotification.transcriptReady,
+                        object: nil,
+                        userInfo: ["transcript": text, "source": source]
+                    )
+                    NotificationCenter.default.post(
+                        name: DictationNotification.stateChanged,
+                        object: nil,
+                        userInfo: ["phase": KeyboardDictationBridge.phaseReady]
+                    )
+                    NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
+                    onComplete(text)
                 }
-                switch result {
-                case .failure(let error):
+            } catch {
+                await MainActor.run {
                     KeyboardHostRecorder.shared.fail(
                         suite,
-                        "Speech model: \(error.localizedDescription). Open Codictate once on Wi-Fi to download the small model."
+                        "Transcription failed: \(error.localizedDescription)"
                     )
                     onComplete(nil)
-                case .success(let modelPath):
-                    // Reload bridge whenever the path changes (variant switch). loadModelAtPath
-                    // internally unloads the previous model, so this is safe to call repeatedly.
-                    if !self.bridge.isLoaded || self.loadedModelPath != modelPath {
-                        guard self.bridge.loadModel(atPath: modelPath) else {
-                            KeyboardHostRecorder.shared.fail(suite, "Could not load the speech model.")
-                            onComplete(nil)
-                            return
-                        }
-                        self.loadedModelPath = modelPath
-                    }
-                    self.bridge.transcribeWavFile(wavPath, language: "auto") { transcript, errorMsg in
-                        if let text = transcript, !text.isEmpty {
-                            suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
-                            suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
-                            suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-                            suite.synchronize()
-                            KeyboardHostRecorder.reloadControlWidget()
-                            KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
-                                source,
-                                transcript: text,
-                                suite: suite
-                            )
-                            if #available(iOS 16.2, *) {
-                                DictationLiveActivityManager.shared.updateToReady()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                    DictationLiveActivityManager.shared.end()
-                                }
-                            }
-                            // Include source so the JS bridge knows whether to handle the
-                            // transcript or leave it to the keyboard extension (which inserts
-                            // via textDocumentProxy, avoiding double-paste inside this app).
-                            NotificationCenter.default.post(
-                                name: DictationNotification.transcriptReady,
-                                object: nil,
-                                userInfo: ["transcript": text, "source": source]
-                            )
-                            NotificationCenter.default.post(
-                                name: DictationNotification.stateChanged,
-                                object: nil,
-                                userInfo: ["phase": KeyboardDictationBridge.phaseReady]
-                            )
-                            NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
-                            onComplete(text)
-                        } else {
-                            let msg = errorMsg ?? "No speech detected."
-                            KeyboardHostRecorder.shared.fail(suite, msg)
-                            onComplete(nil)
-                        }
-                    }
                 }
             }
-        )
+        }
     }
-
 }
 
 // MARK: - Live Activity Manager
@@ -316,7 +274,7 @@ final class KeyboardHostRecorder: NSObject {
 
     private static let recordingSettings: [String: Any] = [
         AVFormatIDKey: Int(kAudioFormatLinearPCM),
-        AVSampleRateKey: 48_000,
+        AVSampleRateKey: 16_000,
         AVNumberOfChannelsKey: 1,
         AVLinearPCMBitDepthKey: 16,
         AVLinearPCMIsFloatKey: false,
@@ -342,6 +300,7 @@ final class KeyboardHostRecorder: NSObject {
     func bootstrap() {
         NSLog("[KeyboardHost] bootstrap() - installing observers")
         installNotificationObservers()
+        ParakeetModelManager.shared.installObserver()
         recoverStaleState()
     }
 
@@ -1085,7 +1044,7 @@ final class KeyboardHostRecorder: NSObject {
         let path = wavURL.path
         NSLog("[KeyboardHost] Stop requested; transcribing \(path)")
 
-        KeyboardHostTranscription.shared.transcribeWav(atPath: path, suite: suite) { transcript in
+        TranscriptionRouter.shared.transcribeWav(atPath: path, suite: suite) { transcript in
             completion?(transcript)
         }
     }

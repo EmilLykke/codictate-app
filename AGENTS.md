@@ -1,10 +1,10 @@
 # codictate-app
 
-Expo + React Native iOS app. On-device speech-to-text via whisper.cpp (no cloud). Three entry points: in-app, keyboard extension, Action Button shortcut.
+Expo + React Native iOS app. On-device speech-to-text with two ASR engines: Parakeet TDT v3 (primary, Neural Engine) and Whisper base-q5_1 (CPU fallback). No cloud transcription.
 
 ## Building
 
-Never run prebuild just to edit Swift files — build directly in Xcode or `expo run:ios`. Prebuild is only needed when `app.json`, config plugins, or native module setup changes. `--clean` nukes the whole `ios/` folder; only use it when things are truly broken.
+Never run prebuild just to edit Swift files; build directly in Xcode or `expo run:ios`. Prebuild is only needed when `app.json`, config plugins, or native module setup changes. `--clean` nukes the whole `ios/` folder; only use it when things are truly broken.
 
 ```bash
 bun run prebuild:ios   # regenerate ios/ from app.config.ts (no clean)
@@ -13,54 +13,81 @@ bun run ios            # expo run:ios
 
 ## Architecture
 
-**App Group**: `group.app.codictate` — shared container between the main app, keyboard extension, and App Intent. All model files, WAV recordings, and UserDefaults state live here.
+**App Group**: `group.app.codictate` -- shared container for UserDefaults state and whisper model files.
 
 **Entry points:**
-- Main app (JS + `KeyboardHostRecorder.swift`) — in-app dictation
-- `CodictateDictationKeyboard` extension — system keyboard with a Dictate button
-- `AudioRecordingIntent` — Action Button / Shortcuts
+- Main app (JS + `KeyboardHostRecorder.swift`) -- in-app dictation
+- `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button (trigger-only, does not run ASR models)
+- `AudioRecordingIntent` -- Action Button / Shortcuts
 
-**Recording flow:** keyboard/intent writes phase=start to App Group → main app picks it up via Darwin notification or deep link → records with `AVAudioRecorder` → transcribes with `WhisperBridge` → writes transcript back to App Group.
+**Recording flow:** keyboard/intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to either `ParakeetEngine` or `WhisperEngine`, writes transcript back to App Group.
 
-## Whisper Models
+**ASR engines (TranscriptionEngine protocol):**
+- `ParakeetEngine` -- wraps FluidAudio's `AsrManager`. Uses `AsrModels.downloadAndLoad(version: .v3)` for model management. Runs on Neural Engine via CoreML.
+- `WhisperEngine` -- wraps the existing `WhisperBridge` (ObjC++). Loads `ggml-base-q5_1.bin` from the App Group container. CPU-only.
 
-Downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container.
+Engine selection is stored in UserDefaults under `preferredModelVariant` (App Group). Default is `parakeet`. The `TranscriptionRouter` class in `KeyboardHostRecorder.swift` reads this preference and dispatches to the correct engine.
 
-| Variant | File | Size |
-|---|---|---|
-| `base` | `ggml-base.bin` | ~142 MB |
-| `small` | `ggml-small-q5_1.bin` | ~181 MB |
+## Speech Models
 
-The keyboard extension always uses `base` (memory budget). The main app and Action Button use the user's preferred model.
+| Variant | Engine | Storage | Size | Hardware |
+|---|---|---|---|---|
+| `parakeet` | Parakeet TDT v3 (FluidAudio) | FluidAudio's internal CoreML cache | ~500 MB | Neural Engine |
+| `base` | Whisper base-q5_1 | `ggml-base-q5_1.bin` (App Group) | ~57 MB | CPU |
 
-## ModelManager — three files that must stay in sync
+Parakeet models are downloaded by `ParakeetModelManager` via FluidAudio's `AsrModels.downloadAndLoad(version: .v3)`. A `parakeetModelReady` flag in UserDefaults (App Group) persists across launches. Whisper models are downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container.
+
+## FluidAudio SPM dependency
+
+Added via `plugins/withFluidAudio.ts` config plugin. This plugin injects the `XCRemoteSwiftPackageReference` and `XCSwiftPackageProductDependency` into the Xcode project during prebuild.
+
+## TranscriptionEngine -- files that must stay consistent
+
+The engine abstraction lives in `targets/codictateapp/`:
+- `TranscriptionEngine.swift` -- protocol with `func transcribe(wavPath: String) async throws -> String`
+- `ParakeetEngine.swift` -- FluidAudio wrapper + `ParakeetModelManager`
+- `WhisperEngine.swift` -- WhisperBridge wrapper
+
+These are compiled into the main app target by the `withKeyboardExtension` config plugin (see `ensureSourceFileBuiltByMainAppTarget` calls).
+
+## ModelManager -- three files that must stay in sync
 
 Whenever you add, remove, or modify a model variant, update all three:
 
-1. `ios/Codictate/ModelManager.swift` — main app target
-2. `targets/codictateapp/ModelManager.swift` — duplicate for the app target build
-3. `modules/codictate-dictation/ios/AppGroupModelManager.swift` — Expo module (cannot import main-app symbols)
+1. `targets/codictateapp/ModelManager.swift` -- source of truth for the main app target
+2. `ios/Codictate/ModelManager.swift` -- main app target (generated by prebuild)
+3. `modules/codictate-dictation/ios/AppGroupModelManager.swift` -- Expo module (cannot import main-app symbols)
 
-The `Variant` enum uses explicit rawValues so the JS-facing string matches (`largeV3Turbo = "large-v3-turbo"`).
+The `Variant` enum uses explicit rawValues so the JS-facing string matches (`parakeet = "parakeet"`, `base = "base"`).
 
-## DictationActivityAttributes — three files that must stay in sync
+## ParakeetModelManager -- cross-module download flow
+
+The Expo module cannot import FluidAudio directly. Model download is coordinated via NotificationCenter:
+
+1. Expo module posts `codictate.parakeet.ensureModel`
+2. `ParakeetModelManager` (installed in `KeyboardHostRecorder.bootstrap()`) receives and calls `downloadAndPrepare()`
+3. Progress posted via `codictate.parakeet.progress` (userInfo: `["progress": Double]`)
+4. Completion posted via `codictate.parakeet.ready` or `codictate.parakeet.failed`
+5. `AppGroupModelManager` listens for these and resolves the `ensureModel` callback
+
+## DictationActivityAttributes -- three files that must stay in sync
 
 Whenever you modify `ContentState` (e.g. adding a field), update all three:
 
-1. `targets/codictateapp/DictationActivityAttributes.swift` — source of truth
-2. `ios/Codictate/DictationActivityAttributes.swift` — main app target copy
-3. `ios/ExpoWidgetsTarget/DictationActivityAttributes.swift` — widget target copy
+1. `targets/codictateapp/DictationActivityAttributes.swift` -- source of truth
+2. `ios/Codictate/DictationActivityAttributes.swift` -- main app target copy
+3. `ios/ExpoWidgetsTarget/DictationActivityAttributes.swift` -- widget target copy
 
-## DictationLiveActivityWidget — two files that must stay in sync
+## DictationLiveActivityWidget -- two files that must stay in sync
 
-1. `targets/widgets/DictationLiveActivityWidget.swift` — source of truth
-2. `ios/ExpoWidgetsTarget/DictationLiveActivityWidget.swift` — compiled widget target copy
+1. `targets/widgets/DictationLiveActivityWidget.swift` -- source of truth
+2. `ios/ExpoWidgetsTarget/DictationLiveActivityWidget.swift` -- compiled widget target copy
 
 ## codictate-dictation Expo module
 
 Local module at `modules/codictate-dictation/`. Declared as `"codictate-dictation": "file:./modules/codictate-dictation"` in `package.json`.
 
-**Important:** `node_modules/codictate-dictation/` is a real copy, not a symlink. After editing `modules/codictate-dictation/index.ts`, sync it manually — TypeScript reads from `node_modules`:
+**Important:** `node_modules/codictate-dictation/` is a real copy, not a symlink. After editing `modules/codictate-dictation/index.ts`, sync it manually; TypeScript reads from `node_modules`:
 
 ```bash
 cp modules/codictate-dictation/index.ts node_modules/codictate-dictation/index.ts
@@ -73,5 +100,5 @@ Running `bun install` re-copies automatically, but won't happen mid-session.
 ```bash
 bun run lint          # ESLint
 bun run lint:fix      # ESLint with auto-fix
-bunx tsc --noEmit      # TypeScript
+bunx tsc --noEmit     # TypeScript
 ```

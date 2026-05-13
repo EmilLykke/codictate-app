@@ -1,42 +1,40 @@
 import Foundation
 
-/// Downloads and locates Whisper GGML models in the App Group container.
+/// Downloads and locates ASR models.
 ///
-/// Two models available:
-///   • `base`  (~142 MB) — unquantized; always used for keyboard-source transcription
-///   • `small` (~181 MB) — Q5_1 quantized; good balance of speed and quality
-///
-/// Both download into the shared App Group so the keyboard extension can read them.
+/// Two variants:
+///   - `parakeet` - FluidAudio Parakeet TDT v3 CoreML (stored in Documents via ParakeetModelManager)
+///   - `base`     - Whisper base-q5_1 GGML (~57 MB, stored in App Group)
 final class ModelManager {
 
     enum Variant: String {
-        case base
-        case small
+        case parakeet = "parakeet"
+        case base = "base"
 
         var filename: String {
             switch self {
-            case .base: return "ggml-base.bin"
-            case .small: return "ggml-small-q5_1.bin"
+            case .parakeet: return ""
+            case .base: return "ggml-base-q5_1.bin"
             }
         }
 
         var url: URL {
             switch self {
+            case .parakeet:
+                return URL(string:
+                    "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml"
+                )!
             case .base:
                 return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-                )!
-            case .small:
-                return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
                 )!
             }
         }
 
         var minBytes: Int64 {
             switch self {
-            case .base: return 130 * 1024 * 1024
-            case .small: return 160 * 1024 * 1024
+            case .parakeet: return 0
+            case .base: return 50 * 1024 * 1024
             }
         }
     }
@@ -60,14 +58,26 @@ final class ModelManager {
     }
 
     func modelFilePath(for variant: Variant) -> String? {
-        containerURL?.appendingPathComponent(variant.filename).path
+        switch variant {
+        case .parakeet:
+            return ParakeetModelManager.shared.modelDirectory.path
+        case .base:
+            return containerURL?.appendingPathComponent(variant.filename).path
+        }
     }
 
     func modelIsReady(for variant: Variant) -> Bool {
-        guard let path = modelFilePath(for: variant) else { return false }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        let size = (attrs?[.size] as? Int64) ?? 0
-        return size >= variant.minBytes
+        switch variant {
+        case .parakeet:
+            return ParakeetModelManager.shared.isReady
+        case .base:
+            guard let path = containerURL?.appendingPathComponent(variant.filename).path else {
+                return false
+            }
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            let size = (attrs?[.size] as? Int64) ?? 0
+            return size >= variant.minBytes
+        }
     }
 
     /// Default ensure (Base) — kept for backward compatibility with keyboard flow.
@@ -79,11 +89,24 @@ final class ModelManager {
     }
 
     /// Pick a specific variant. Skips the network if the file already exists at >= minBytes.
+    /// For `parakeet`, readiness is checked via ParakeetModelManager (CoreML directory layout).
     func ensureModel(
         variant: Variant,
         onProgress: @escaping (Double) -> Void,
         onComplete: @escaping (Result<String, Error>) -> Void
     ) {
+        if variant == .parakeet {
+            if ParakeetModelManager.shared.isReady {
+                onComplete(.success(ParakeetModelManager.shared.modelDirectory.path))
+            } else {
+                onComplete(.failure(NSError(
+                    domain: "ModelManager", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Parakeet model not downloaded yet. Open Codictate to download."]
+                )))
+            }
+            return
+        }
+
         guard let container = containerURL else {
             onComplete(.failure(NSError(
                 domain: "ModelManager",
@@ -119,8 +142,6 @@ final class ModelManager {
                     }
                     return
                 }
-                // File move must happen synchronously before this callback returns —
-                // iOS deletes the temp file the moment didFinishDownloadingTo exits.
                 do {
                     if !FileManager.default.fileExists(atPath: container.path) {
                         try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
@@ -135,7 +156,6 @@ final class ModelManager {
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         let task = session.downloadTask(with: variant.url)
         task.resume()
-        // Keep delegate alive for the session lifetime.
         objc_setAssociatedObject(session, &ModelManager.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
     }
 

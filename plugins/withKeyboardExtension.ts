@@ -32,7 +32,7 @@ import * as fs from "fs";
 const EXT_NAME = "CodictateDictationKeyboard";
 const EXT_BUNDLE_ID = "app.codictate.keyboard";
 const APP_GROUP_ID = "group.app.codictate";
-const DEPLOYMENT_TARGET = "15.1";
+const DEPLOYMENT_TARGET = "17.0";
 
 /** Keyboard extension: UI + App Group bridge only (no mic / no Whisper). */
 const EXTENSION_SOURCES = [
@@ -631,6 +631,24 @@ function syncKeyboardExtensionAndWireHostTranscription(
     ensureSourceFileBuiltByMainAppTarget(
       project,
       `${appTargetName}/DictationActivityAttributes.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/TranscriptionEngine.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/ParakeetEngine.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/WhisperEngine.swift`,
       hostSourceGroup,
       appUuid,
     );

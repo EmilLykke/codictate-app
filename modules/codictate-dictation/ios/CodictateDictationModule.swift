@@ -14,7 +14,7 @@ public final class CodictateDictationModule: Module {
     // Mirror of `KeyboardDictationBridge`. Keep in sync.
     private static let appGroupID = "group.app.codictate"
     /// In-app dictation + Action Button. Must match KeyboardDictationBridge.preferredVariantKey.
-    private static let preferredVariantKey = "preferredWhisperVariant"
+    private static let preferredVariantKey = "preferredModelVariant"
     private static let phaseKey = "kbdDictationPhase"
     private static let transcriptKey = "kbdTranscript"
     private static let errorKey = "kbdDictationHostError"
@@ -113,12 +113,12 @@ public final class CodictateDictationModule: Module {
         // MARK: - Model management
 
         AsyncFunction("isModelReady") { (variantStr: String?) -> Bool in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
             return AppGroupModelManager.shared.modelIsReady(for: variant)
         }
 
         AsyncFunction("ensureModel") { (variantStr: String?) async throws -> Void in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
             return try await withCheckedThrowingContinuation { continuation in
                 AppGroupModelManager.shared.ensureModel(
                     variant: variant,
@@ -136,18 +136,38 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("deleteModel") { (variantStr: String?) -> Void in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
+            if variant == .parakeet {
+                if let dir = AppGroupModelManager.shared.parakeetModelDirectory {
+                    try? FileManager.default.removeItem(at: dir)
+                }
+                let suite = UserDefaults(suiteName: Self.appGroupID)
+                suite?.removeObject(forKey: "parakeetModelReady")
+                suite?.synchronize()
+                return
+            }
             guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }
             try? FileManager.default.removeItem(atPath: path)
         }
 
         AsyncFunction("listModels") { () -> [[String: Any]] in
-            let variants: [AppGroupModelManager.Variant] = [.base, .small]
+            let variants: [AppGroupModelManager.Variant] = [.parakeet, .base]
             return variants.map { variant in
                 let ready = AppGroupModelManager.shared.modelIsReady(for: variant)
                 var size: Int64 = 0
-                if let path = AppGroupModelManager.shared.modelFilePath(for: variant),
-                   let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
+                if variant == .parakeet {
+                    // Report total size of the Parakeet CoreML directory
+                    if let dir = AppGroupModelManager.shared.parakeetModelDirectory,
+                       let enumerator = FileManager.default.enumerator(atPath: dir.path) {
+                        while let file = enumerator.nextObject() as? String {
+                            let fullPath = dir.appendingPathComponent(file).path
+                            if let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath) {
+                                size += (attrs[.size] as? Int64) ?? 0
+                            }
+                        }
+                    }
+                } else if let path = AppGroupModelManager.shared.modelFilePath(for: variant),
+                          let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
                     size = (attrs[.size] as? Int64) ?? 0
                 }
                 return ["variant": variant.rawValue, "ready": ready, "size": size]
@@ -155,15 +175,15 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("getPreferredModel") { () -> String in
-            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.base.rawValue }
-            let raw = suite.string(forKey: Self.preferredVariantKey) ?? AppGroupModelManager.Variant.base.rawValue
-            return AppGroupModelManager.Variant(rawValue: raw)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.parakeet.rawValue }
+            let raw = suite.string(forKey: Self.preferredVariantKey) ?? AppGroupModelManager.Variant.parakeet.rawValue
+            return AppGroupModelManager.Variant(rawValue: raw)?.rawValue ?? AppGroupModelManager.Variant.parakeet.rawValue
         }
 
         AsyncFunction("setPreferredModel") { (variantStr: String?) -> Void in
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
             let trimmed = (variantStr ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
+            let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.parakeet.rawValue
             suite.set(value, forKey: Self.preferredVariantKey)
             suite.synchronize()
         }

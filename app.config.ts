@@ -1,6 +1,7 @@
 import "tsx/cjs";
 import { ExpoConfig } from "expo/config";
 import withKeyboardExtension from "./plugins/withKeyboardExtension";
+import withFluidAudio from "./plugins/withFluidAudio";
 
 const config: ExpoConfig = {
   name: "Codictate",
@@ -72,7 +73,7 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         ios: {
-          deploymentTarget: "16.1",
+          deploymentTarget: "17.0",
         },
       },
     ],
@@ -107,4 +108,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default withKeyboardExtension(config);
+export default withFluidAudio(withKeyboardExtension(config));

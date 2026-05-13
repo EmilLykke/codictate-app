@@ -18,7 +18,7 @@ export function useNativeModel(): NativeModelState {
   const [state, setState] = useState<NativeModelState>({ status: 'checking' })
 
   /** Tracks `onModelProgress` filtering and which variant triggered the current download UI. */
-  const activeVariantRef = useRef<ModelVariant>('base')
+  const activeVariantRef = useRef<ModelVariant>('parakeet')
 
   const run = useCallback(() => {
     void getPreferredModel().then((variant) => {

@@ -50,18 +50,18 @@ function SectionCard({ children }: { children: ReactNode }) {
 }
 
 const MODEL_LABELS: Record<string, string> = {
-  base: 'Base',
-  small: 'Small (Q5_1)',
+  parakeet: 'Parakeet TDT v3',
+  base: 'Whisper Base (Q5_1)',
 }
 
 const MODEL_TAGLINE: Record<string, string> = {
-  base: 'Fastest · smallest (~142 MB)',
-  small: 'Good balance (~181 MB)',
+  parakeet: 'Best quality, Neural Engine (~500 MB)',
+  base: 'Fallback, CPU-only (~57 MB)',
 }
 
 const MODEL_SIZE_MB: Record<string, string> = {
-  base: '142',
-  small: '181',
+  parakeet: '500',
+  base: '57',
 }
 
 const ACTION_BUTTON_SHORTCUT_URL =
@@ -77,7 +77,8 @@ const IOS_KEYBOARD_SETTINGS_URLS = [
 export function ScreenSettings() {
   const { languageId } = useTranscriptionLanguage()
   const [models, setModels] = useState<ModelInfo[]>([])
-  const [preferredVariant, setPreferredVariant] = useState<ModelVariant>('base')
+  const [preferredVariant, setPreferredVariant] =
+    useState<ModelVariant>('parakeet')
   const [downloadProgress, setDownloadProgress] = useState<
     Partial<Record<ModelVariant, number>>
   >({})
@@ -309,10 +310,10 @@ export function ScreenSettings() {
           Speech models
         </Text>
         <Text style={styles.subHint} selectable>
-          Stored in the shared App Group so the main app and keyboard can share
-          files. Tap an installed row to choose the model for dictation inside
-          this app and the Action Button shortcut (the keyboard always uses Base
-          on the device).
+          Parakeet is the primary model, running on the Neural Engine for best
+          quality. Whisper Base is a lightweight CPU fallback. Tap an installed
+          row to choose the model for in-app dictation and the Action Button
+          shortcut.
         </Text>
 
         {models.map((row) => {
