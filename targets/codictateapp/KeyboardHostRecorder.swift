@@ -443,6 +443,13 @@ final class KeyboardHostRecorder: NSObject {
             object: nil
         )
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+
         // Darwin (cross-process) listeners for keyboard extension.
         // Handles the case where Codictate is already in the foreground when the keyboard
         // Dictate button is tapped. didBecomeActiveNotification never fires then.
@@ -484,6 +491,22 @@ final class KeyboardHostRecorder: NSObject {
         cancel()
     }
 
+    @objc private func handleAudioInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+        if type == .ended, recorder != nil {
+            NSLog("[KeyboardHost] Audio interruption ended while recording — restoring session")
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+                try session.setActive(true, options: [])
+            } catch {
+                NSLog("[KeyboardHost] Failed to restore session after interruption: \(error)")
+            }
+        }
+    }
+
     @objc private func handleAppActivation() {
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
@@ -508,13 +531,24 @@ final class KeyboardHostRecorder: NSObject {
         transcriptFallbackWorkItem?.cancel()
         transcriptFallbackWorkItem = nil
         guard recorder == nil else { return }
+        attemptDarwinStartPickup(retryCount: 0)
+    }
+
+    private func attemptDarwinStartPickup(retryCount: Int) {
+        guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        CFPreferencesAppSynchronize(KeyboardDictationBridge.suiteName as CFString)
         suite.synchronize()
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
-        NSLog("[KeyboardHost] handleDarwinStart phase=\(phase)")
-        guard phase == KeyboardDictationBridge.phaseStart else { return }
-        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
-        startSessionInternal(suite: suite, source: source)
+        NSLog("[KeyboardHost] attemptDarwinStartPickup phase=\(phase) retry=\(retryCount)")
+        if phase == KeyboardDictationBridge.phaseStart {
+            let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
+            startSessionInternal(suite: suite, source: source)
+        } else if retryCount < 3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.attemptDarwinStartPickup(retryCount: retryCount + 1)
+            }
+        }
     }
 
     @objc private func handleDarwinStop() {
@@ -594,7 +628,13 @@ final class KeyboardHostRecorder: NSObject {
                 mode: .default,
                 options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
             )
-            try session.setActive(true, options: [])
+            do {
+                try session.setActive(true, options: [])
+            } catch {
+                NSLog("[KeyboardHost] Intent setActive failed (\(error)), resetting and retrying")
+                try? session.setActive(false, options: [])
+                try session.setActive(true, options: [])
+            }
         } catch let error as NSError {
             fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
             return
@@ -1040,7 +1080,6 @@ final class KeyboardHostRecorder: NSObject {
             return
         }
 
-        // Mark the source so JS can distinguish keyboard-initiated vs in-app sessions.
         suite.set(KeyboardDictationBridge.sourceKeyboard, forKey: KeyboardDictationBridge.sourceKey)
         suite.synchronize()
 
@@ -1061,6 +1100,7 @@ final class KeyboardHostRecorder: NSObject {
 
     private func beginRecording(suite: UserDefaults) {
         NSLog("[KeyboardHost] beginRecording called")
+
         guard let url = outputURL(suite: suite) else {
             fail(suite, "Could not create recording path (App Group missing?).")
             return
@@ -1069,6 +1109,7 @@ final class KeyboardHostRecorder: NSObject {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
         let isIntentStart = source == KeyboardDictationBridge.sourceIntent
+
         beginKeyboardKeepaliveIfNeeded(source: source)
 
         if #available(iOS 16.2, *) {
@@ -1089,9 +1130,14 @@ final class KeyboardHostRecorder: NSObject {
                 mode: .default,
                 options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
             )
-            NSLog("[KeyboardHost] Audio session category set, activating...")
-            try session.setActive(true, options: [])
-            NSLog("[KeyboardHost] Audio session activated successfully")
+            do {
+                try session.setActive(true, options: [])
+            } catch {
+                NSLog("[KeyboardHost] setActive failed (\(error)), resetting and retrying")
+                try? session.setActive(false, options: [])
+                try session.setActive(true, options: [])
+            }
+            NSLog("[KeyboardHost] Audio session ready")
         } catch let error as NSError {
             NSLog("[KeyboardHost] Audio session FAILED: domain=\(error.domain) code=\(error.code) \(error.localizedDescription)")
             fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
@@ -1188,6 +1234,10 @@ final class KeyboardHostRecorder: NSObject {
 
         recorder?.stop()
         recorder = nil
+
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+            ?? KeyboardDictationBridge.sourceHost
+        NSLog("[KeyboardHost] Recording stopped, source=\(source)")
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 

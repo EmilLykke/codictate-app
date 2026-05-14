@@ -188,26 +188,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         suite.synchronize()
         viewState = .recording
 
-        let keepaliveStart = suite.double(forKey: KbdSuite.keepaliveStartKey)
-        let keepaliveDuration = suite.double(forKey: KbdSuite.keepaliveDurationKey)
-        let isHostWarm = keepaliveDuration > 0 &&
-            (Date().timeIntervalSince1970 - keepaliveStart) < keepaliveDuration
-
-        if isHostWarm {
-            postDarwinNotification(kbdDarwinStartName)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                guard let self else { return }
-                guard let suite = self.suite else { return }
-                suite.synchronize()
-                let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-                guard phase == KbdSuite.phaseStart else { return }
-                guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-                self.openApp(url)
-            }
-        } else {
-            guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-            openApp(url)
-        }
+        NSLog("[Keyboard] Opening containing app to start keyboard dictation")
+        guard let url = URL(string: "codictateapp://keyboard-record") else { return }
+        openApp(url)
 
         startFallback(for: suite)
     }
