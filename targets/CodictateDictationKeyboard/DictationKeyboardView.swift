@@ -215,22 +215,19 @@ final class DictationKeyboardView: UIView {
     private let dismissButton = KeyboardKey(style: .special)
     private let statusLabel = UILabel()
 
-    private let impact = UIImpactFeedbackGenerator(style: .light)
-
     // MARK: Init
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = UIColor(red: 0.812, green: 0.831, blue: 0.859, alpha: 1)
         build()
-        impact.prepare()
         dictateButton.setIcon("mic.fill", size: 16)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 266)
+        CGSize(width: UIView.noIntrinsicMetric, height: 226)
     }
 
     // MARK: State
@@ -263,7 +260,7 @@ final class DictationKeyboardView: UIView {
 
         let keys = UIStackView()
         keys.axis = .vertical
-        keys.spacing = 8
+        keys.spacing = 6
         keys.distribution = .fillEqually
         keys.translatesAutoresizingMaskIntoConstraints = false
         addSubview(keys)
@@ -277,12 +274,12 @@ final class DictationKeyboardView: UIView {
             strip.topAnchor.constraint(equalTo: topAnchor),
             strip.leadingAnchor.constraint(equalTo: leadingAnchor),
             strip.trailingAnchor.constraint(equalTo: trailingAnchor),
-            strip.heightAnchor.constraint(equalToConstant: 38),
+            strip.heightAnchor.constraint(equalToConstant: 34),
 
             keys.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 2),
             keys.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             keys.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            keys.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            keys.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
     }
 
@@ -456,18 +453,17 @@ final class DictationKeyboardView: UIView {
     // MARK: Actions
 
     @objc private func letterTapped(_ sender: KeyboardKey) {
-        impact.impactOccurred()
         let text = sender.contentLabel.text ?? ""
         delegate?.didInsertText(text)
         shiftOn = false
     }
 
-    @objc private func shiftTapped()     { impact.impactOccurred(); shiftOn.toggle() }
-    @objc private func backspaceTapped() { impact.impactOccurred(); delegate?.didTapBackspace() }
-    @objc private func dictateTapped()   { impact.impactOccurred(); delegate?.didTapDictate() }
+    @objc private func shiftTapped()     { shiftOn.toggle() }
+    @objc private func backspaceTapped() { delegate?.didTapBackspace() }
+    @objc private func dictateTapped()   { delegate?.didTapDictate() }
     @objc private func dismissTapped()   { delegate?.didTapDismiss() }
     @objc private func nextKeyboardTapped() { delegate?.didTapNextKeyboard() }
-    @objc private func numbersTapped()   { impact.impactOccurred() }
-    @objc private func spaceTapped()     { impact.impactOccurred(); delegate?.didInsertText(" ") }
-    @objc private func returnTapped()    { impact.impactOccurred(); delegate?.didInsertText("\n") }
+    @objc private func numbersTapped()   {}
+    @objc private func spaceTapped()     { delegate?.didInsertText(" ") }
+    @objc private func returnTapped()    { delegate?.didInsertText("\n") }
 }

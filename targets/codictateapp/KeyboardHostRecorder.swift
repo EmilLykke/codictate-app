@@ -17,6 +17,8 @@ enum KeyboardDictationBridge {
     static let transcriptTimestampKey = "kbdTranscriptTimestamp"
     static let sourceKey = "kbdDictationSource"
     static let keyboardVisibleKey = "kbdKeyboardVisible"
+    static let keepaliveStartKey = "kbdKeepaliveStart"
+    static let keepaliveDurationKey = "kbdKeepaliveDuration"
 
     static let phaseIdle = "idle"
     static let phaseStart = "start"
@@ -503,6 +505,8 @@ final class KeyboardHostRecorder: NSObject {
     // Fires even when Codictate is already in the foreground (unlike didBecomeActiveNotification).
     @objc private func handleDarwinStart() {
         NSLog("[KeyboardHost] handleDarwinStart fired, recorder=\(recorder != nil)")
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         suite.synchronize()
@@ -894,9 +898,15 @@ final class KeyboardHostRecorder: NSObject {
 
     private func scheduleKeyboardKeepaliveEnd() {
         guard keyboardBackgroundTask != .invalid else { return }
+        let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName)
+        let configured = suite?.double(forKey: KeyboardDictationBridge.keepaliveDurationKey) ?? 0
+        let duration = configured > 0 ? configured : Self.keyboardKeepaliveSeconds
+        suite?.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.keepaliveStartKey)
+        suite?.set(duration, forKey: KeyboardDictationBridge.keepaliveDurationKey)
+        suite?.synchronize()
         keyboardKeepaliveTimer?.invalidate()
         keyboardKeepaliveTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.keyboardKeepaliveSeconds,
+            withTimeInterval: duration,
             repeats: false
         ) { [weak self] _ in
             self?.endKeyboardKeepalive()
@@ -907,6 +917,9 @@ final class KeyboardHostRecorder: NSObject {
     private func endKeyboardKeepalive() {
         keyboardKeepaliveTimer?.invalidate()
         keyboardKeepaliveTimer = nil
+        let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName)
+        suite?.removeObject(forKey: KeyboardDictationBridge.keepaliveStartKey)
+        suite?.synchronize()
         guard keyboardBackgroundTask != .invalid else { return }
         let task = keyboardBackgroundTask
         keyboardBackgroundTask = .invalid
@@ -1015,6 +1028,8 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     private func handleDeepLinkOnMain() {
+        transcriptFallbackWorkItem?.cancel()
+        transcriptFallbackWorkItem = nil
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else {
             NSLog("[KeyboardHost] No app group suite")
             return

@@ -10,6 +10,8 @@ private enum KbdSuite {
     static let transcriptTimestampKey = "kbdTranscriptTimestamp"
     static let sourceKey        = "kbdDictationSource"
     static let keyboardVisibleKey = "kbdKeyboardVisible"
+    static let keepaliveStartKey = "kbdKeepaliveStart"
+    static let keepaliveDurationKey = "kbdKeepaliveDuration"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -188,17 +190,28 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
         postDarwinNotification(kbdDarwinStartName)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self else { return }
-            guard let suite = self.suite else { return }
-            suite.synchronize()
-            let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-            guard phase == KbdSuite.phaseStart else { return }
+        let keepaliveStart = suite.double(forKey: KbdSuite.keepaliveStartKey)
+        let keepaliveDuration = suite.double(forKey: KbdSuite.keepaliveDurationKey)
+        let isHostWarm = keepaliveDuration > 0 &&
+            (Date().timeIntervalSince1970 - keepaliveStart) < keepaliveDuration
+
+        if isHostWarm {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                guard let suite = self.suite else { return }
+                suite.synchronize()
+                let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+                guard phase == KbdSuite.phaseStart else { return }
+                guard let url = URL(string: "codictateapp://keyboard-record") else { return }
+                self.extensionContext?.open(url) { _ in }
+            }
+        } else {
             guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-            self.extensionContext?.open(url) { [weak self] ok in
+            extensionContext?.open(url) { [weak self] ok in
                 DispatchQueue.main.async {
                     guard let self else { return }
                     if !ok {
+                        self.stopStartFallback()
                         self.viewState = .error("Could not open Codictate.")
                         suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
                         suite.removeObject(forKey: KbdSuite.wavFileKey)
