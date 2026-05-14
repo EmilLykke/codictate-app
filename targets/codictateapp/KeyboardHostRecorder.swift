@@ -14,6 +14,7 @@ enum KeyboardDictationBridge {
     static let wavFileKey = "kbdDictationWavFile"
     static let errorKey = "kbdDictationHostError"
     static let transcriptKey = "kbdTranscript"
+    static let transcriptTimestampKey = "kbdTranscriptTimestamp"
     static let sourceKey = "kbdDictationSource"
     static let keyboardVisibleKey = "kbdKeyboardVisible"
 
@@ -77,6 +78,7 @@ private final class TranscriptionRouter {
                         return
                     }
                     suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
+                    suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.transcriptTimestampKey)
                     suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
                     suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
                     suite.synchronize()
@@ -386,6 +388,19 @@ final class KeyboardHostRecorder: NSObject {
             suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
             suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
+            suite.synchronize()
+            Self.reloadControlWidget()
+            if #available(iOS 16.2, *) {
+                DictationLiveActivityManager.shared.end()
+            }
+        case KeyboardDictationBridge.phaseReady,
+             KeyboardDictationBridge.phaseFailed:
+            NSLog("[KeyboardHost] Stale phase '\(phase)' at bootstrap; resetting to idle.")
+            suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
             suite.synchronize()
             Self.reloadControlWidget()
             if #available(iOS 16.2, *) {
@@ -773,6 +788,7 @@ final class KeyboardHostRecorder: NSObject {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
             suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
             suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
             suite.synchronize()
             Self.reloadControlWidget()
@@ -824,6 +840,7 @@ final class KeyboardHostRecorder: NSObject {
         suite.set(KeyboardDictationBridge.phaseFailed, forKey: KeyboardDictationBridge.phaseKey)
         suite.set(message, forKey: KeyboardDictationBridge.errorKey)
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
         suite.synchronize()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         Self.reloadControlWidget()
@@ -933,6 +950,7 @@ final class KeyboardHostRecorder: NSObject {
             self.copyTranscriptToClipboard(transcript)
             suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
             suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
             suite.synchronize()
             Self.reloadControlWidget()
             NotificationCenter.default.post(
@@ -1196,6 +1214,7 @@ final class KeyboardHostRecorder: NSObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
         suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
         suite.synchronize()
         Self.reloadControlWidget()
