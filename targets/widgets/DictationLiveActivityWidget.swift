@@ -44,10 +44,10 @@ struct DictationLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 8) {
-                        Image(systemName: "button.programmable")
+                        Image(systemName: context.state.phase == "standby" ? "waveform" : "button.programmable")
                             .font(.title2)
                             .foregroundColor(.white)
-                        Text("Hold\nto stop")
+                        Text(context.state.phase == "standby" ? "Ready" : "Hold\nto stop")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
                             .multilineTextAlignment(.leading)
@@ -74,6 +74,10 @@ struct DictationLiveActivityWidget: Widget {
                             }
                         } else if context.state.phase == "ready" {
                             Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.white)
+                        } else if context.state.phase == "standby" {
+                            Image(systemName: "waveform")
                                 .font(.title2)
                                 .foregroundColor(.white)
                         }
@@ -109,6 +113,8 @@ struct DictationLiveActivityWidget: Widget {
                 } else if context.state.phase == "ready" {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
+                } else if context.state.phase == "standby" {
+                    EmptyView()
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
@@ -148,6 +154,13 @@ private struct DictationBannerView: View {
                     Text("Done")
                         .font(.headline)
                         .foregroundColor(.white)
+                } else if state.phase == "standby" {
+                    Text("Ready")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("Listening for the keyboard")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
                 }
             }
             Spacer()
@@ -161,6 +174,9 @@ private struct DictationBannerView: View {
                 }
             } else if state.phase == "ready" {
                 Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.white)
+            } else if state.phase == "standby" {
+                Image(systemName: "waveform")
                     .foregroundColor(.white)
             }
         }
