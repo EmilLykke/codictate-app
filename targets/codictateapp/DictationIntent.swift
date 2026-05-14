@@ -26,72 +26,40 @@ struct DictationToggleIntent: AudioRecordingIntent, LiveActivityIntent {
     // a future cross-process caller (e.g., keyboard extension) can use them.
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        NSLog("[DictationIntent] perform() entry")
-
         guard let suite = UserDefaults(suiteName: Self.suiteName) else {
-            NSLog("[DictationIntent] No App Group suite")
             return .result(value: "")
         }
-        suite.synchronize()
+
         let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
-        let source = suite.string(forKey: Self.sourceKey) ?? ""
-        NSLog("[DictationIntent] phase=\(phase), source=\(source)")
 
-        switch phase {
-        case "start":
-            if source == Self.sourceKeyboard && !KeyboardHostRecorder.shared.hasActiveRecording() {
-                NSLog("[DictationIntent] stale keyboard start detected; replacing with intent start")
-                startNewSession(suite)
-            } else {
-                NSLog("[DictationIntent] stopping pending start")
-                let transcript = await stopCurrentSession(suite)
-                return .result(value: transcript ?? "")
-            }
-
-        case "recording":
-            NSLog("[DictationIntent] stopping recording")
-            let transcript = await stopCurrentSession(suite)
+        // Stop path: must await transcription so the shortcut receives the text.
+        if phase == "recording" {
+            suite.set("stop_requested", forKey: Self.phaseKey)
+            let transcript = await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
             return .result(value: transcript ?? "")
-
-        case "stop_requested", "processing":
-            NSLog("[DictationIntent] already stopping/processing")
-
-        default:
-            NSLog("[DictationIntent] starting")
-            startNewSession(suite)
         }
 
-        return .result(value: "")
-    }
+        if phase == "stop_requested" || phase == "processing" {
+            return .result(value: "")
+        }
 
-    private func startNewSession(_ suite: UserDefaults) {
-        let filename = "intent-\(UUID().uuidString).wav"
+        // Start path: Live Activity first for instant Dynamic Island, then
+        // dispatch recording setup. Returns immediately.
+        if #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.startRecording()
+        }
+
         suite.set("start", forKey: Self.phaseKey)
-        suite.set(filename, forKey: Self.wavFileKey)
+        suite.set("intent-\(UUID().uuidString).wav", forKey: Self.wavFileKey)
         suite.set(Self.sourceIntent, forKey: Self.sourceKey)
         suite.removeObject(forKey: Self.errorKey)
         suite.removeObject(forKey: Self.transcriptKey)
-        // Skip synchronize() here: beginRecordingIfPending runs in the same
-        // process and reads from the in-memory UserDefaults cache. The cross-
-        // process flush is only needed for the keyboard extension path.
 
-        // Fire-and-forget on the main thread so perform() returns instantly and
-        // the Shortcuts running indicator disappears right away. The recording
-        // will start on the next main run loop iteration; the Live Activity
-        // appears once the audio session is ready.
         Task { @MainActor in
-            KeyboardHostRecorder.shared.beginRecordingIfPending()
+            KeyboardHostRecorder.shared.startRecordingForIntent()
         }
-    }
 
-    private func stopCurrentSession(_ suite: UserDefaults) async -> String? {
-        suite.set("stop_requested", forKey: Self.phaseKey)
-        suite.synchronize()
-        // No Darwin notification: the intent calls requestStopAndWaitFromIntent
-        // directly. A Darwin stop would race handleDarwinStop, which calls
-        // processStopRequested(completion: nil), consuming the recorder before
-        // the intent's own completion handler can receive the transcript.
-        return await KeyboardHostRecorder.shared.requestStopAndWaitFromIntent()
+        return .result(value: "")
     }
 }
 

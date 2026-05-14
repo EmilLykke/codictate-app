@@ -48,6 +48,19 @@ private final class TranscriptionRouter {
     private let parakeet = ParakeetEngine()
     private let whisper = WhisperEngine()
 
+    func preloadEngine(suite: UserDefaults) {
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "parakeet"
+        let engine: TranscriptionEngine = preferred == "base" ? whisper : parakeet
+        Task {
+            do {
+                try await engine.warmUp()
+                NSLog("[TranscriptionRouter] Engine pre-loaded")
+            } catch {
+                NSLog("[TranscriptionRouter] Engine pre-load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
@@ -74,9 +87,13 @@ private final class TranscriptionRouter {
                         suite: suite
                     )
                     if #available(iOS 16.2, *) {
-                        DictationLiveActivityManager.shared.updateToReady()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        if source == KeyboardDictationBridge.sourceIntent {
                             DictationLiveActivityManager.shared.end()
+                        } else {
+                            DictationLiveActivityManager.shared.updateToReady()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                DictationLiveActivityManager.shared.end()
+                            }
                         }
                     }
                     NotificationCenter.default.post(
@@ -117,6 +134,11 @@ final class DictationLiveActivityManager {
 
     @discardableResult
     func startRecording() -> Bool {
+        // End any lingering activities from previous sessions before starting
+        // a fresh one. Ended activities can persist in the Dynamic Island for
+        // minutes with .default dismissal, showing stale "processing" state.
+        endAllStale()
+
         if let activity = trackedActivity() {
             let now = Date()
             currentActivityID = activity.id
@@ -188,7 +210,6 @@ final class DictationLiveActivityManager {
             activitiesToEnd = Activity<DictationActivityAttributes>.activities
         }
 
-        // Pass the "ready" state so the ring shows as fully closed before iOS dismisses it.
         let finalState = DictationActivityAttributes.ContentState(
             phase: "ready",
             startDate: recordingStartDate ?? Date()
@@ -197,7 +218,7 @@ final class DictationLiveActivityManager {
             Task {
                 await activity.end(
                     ActivityContent(state: finalState, staleDate: nil),
-                    dismissalPolicy: .default
+                    dismissalPolicy: .immediate
                 )
                 NSLog("[LiveActivity] Ended id=\(activity.id)")
             }
@@ -207,11 +228,33 @@ final class DictationLiveActivityManager {
     }
 
     private func trackedActivity() -> Activity<DictationActivityAttributes>? {
+        let active = Activity<DictationActivityAttributes>.activities.filter {
+            $0.activityState == .active
+        }
         if let id = currentActivityID,
-           let activity = Activity<DictationActivityAttributes>.activities.first(where: { $0.id == id }) {
+           let activity = active.first(where: { $0.id == id }) {
             return activity
         }
-        return Activity<DictationActivityAttributes>.activities.first
+        return active.first
+    }
+
+    private func endAllStale() {
+        let stale = Activity<DictationActivityAttributes>.activities.filter {
+            $0.activityState != .active
+        }
+        guard !stale.isEmpty else { return }
+        let dismissState = DictationActivityAttributes.ContentState(
+            phase: "ready", startDate: Date()
+        )
+        for activity in stale {
+            Task {
+                await activity.end(
+                    ActivityContent(state: dismissState, staleDate: nil),
+                    dismissalPolicy: .immediate
+                )
+            }
+        }
+        NSLog("[LiveActivity] Dismissed \(stale.count) stale activit(ies)")
     }
 
     private func update(
@@ -267,6 +310,8 @@ final class KeyboardHostRecorder: NSObject {
 
     /// Auto-stop fallback in case no entry point requests stop (covers stuck-in-background).
     private static let autoStopAfterSeconds: TimeInterval = 60
+    /// Longer auto-stop for Action Button recordings (5 minutes).
+    private static let intentAutoStopAfterSeconds: TimeInterval = 300
     /// Keeps the host process warm after a keyboard handoff so a quick follow-up start can skip reopening the app.
     private static let keyboardKeepaliveSeconds: TimeInterval = 30
     /// Gives the visible keyboard first chance to insert Action Button output before clipboard fallback.
@@ -315,6 +360,12 @@ final class KeyboardHostRecorder: NSObject {
 
         switch phase {
         case KeyboardDictationBridge.phaseStart:
+            let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+                ?? KeyboardDictationBridge.sourceHost
+            if source == KeyboardDictationBridge.sourceIntent {
+                NSLog("[KeyboardHost] Skipping stale-start recovery for intent source")
+                break
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self, self.recorder == nil else { return }
                 guard let s = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
@@ -322,10 +373,10 @@ final class KeyboardHostRecorder: NSObject {
                 let current = s.string(forKey: KeyboardDictationBridge.phaseKey)
                     ?? KeyboardDictationBridge.phaseIdle
                 if current == KeyboardDictationBridge.phaseStart {
-                    let source = s.string(forKey: KeyboardDictationBridge.sourceKey)
+                    let src = s.string(forKey: KeyboardDictationBridge.sourceKey)
                         ?? KeyboardDictationBridge.sourceHost
-                    NSLog("[KeyboardHost] Recovering stale 'start' phase; attempting recording (source=\(source))")
-                    self.startSessionInternal(suite: s, source: source)
+                    NSLog("[KeyboardHost] Recovering stale 'start' phase; attempting recording (source=\(src))")
+                    self.startSessionInternal(suite: s, source: src)
                 }
             }
         case KeyboardDictationBridge.phaseRecording,
@@ -503,6 +554,80 @@ final class KeyboardHostRecorder: NSObject {
         beginRecording(suite: suite)
     }
 
+    /// Dedicated recording start for Action Button intent. Assumes Live Activity
+    /// was already started by DictationToggleIntent.perform(). Skips permission
+    /// checks, app-state gates, and Live Activity creation to avoid race conditions.
+    func startRecordingForIntent() {
+        guard recorder == nil else { return }
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
+        guard phase == KeyboardDictationBridge.phaseStart else { return }
+
+        guard let url = outputURL(suite: suite) else {
+            fail(suite, "Could not create recording path (App Group missing?).")
+            return
+        }
+
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
+            )
+            try session.setActive(true, options: [])
+        } catch let error as NSError {
+            fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
+            return
+        }
+
+        do {
+            let rec = try AVAudioRecorder(url: url, settings: Self.recordingSettings)
+            guard rec.prepareToRecord() else {
+                fail(suite, "Could not prepare the microphone for recording.")
+                return
+            }
+            guard rec.record() else {
+                fail(suite, "Could not start microphone recording.")
+                return
+            }
+            guard rec.isRecording else {
+                fail(suite, "Microphone did not enter recording state.")
+                return
+            }
+            recorder = rec
+        } catch {
+            fail(suite, "Recorder error: \(error.localizedDescription)")
+            return
+        }
+
+        suite.set(KeyboardDictationBridge.phaseRecording, forKey: KeyboardDictationBridge.phaseKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.synchronize()
+        Self.reloadControlWidget()
+
+        NotificationCenter.default.post(
+            name: DictationNotification.stateChanged,
+            object: nil,
+            userInfo: ["phase": KeyboardDictationBridge.phaseRecording]
+        )
+
+        cancelAutoStop()
+        autoStopTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.intentAutoStopAfterSeconds,
+            repeats: false
+        ) { [weak self] _ in
+            NSLog("[KeyboardHost] Intent auto-stop fired after \(Self.intentAutoStopAfterSeconds)s")
+            self?.requestStop()
+        }
+
+        startPollingForStop(suite: suite)
+        TranscriptionRouter.shared.preloadEngine(suite: suite)
+
+        NSLog("[KeyboardHost] Intent recording started")
+    }
+
     /// Reads App Group state and begins recording if phase is "start".
     /// Called by the intent after it has already written state to the App Group.
     func beginRecordingIfPending() {
@@ -510,7 +635,8 @@ final class KeyboardHostRecorder: NSObject {
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         transcriptFallbackWorkItem?.cancel()
         transcriptFallbackWorkItem = nil
-        suite.synchronize()
+        // No synchronize() needed when called from the in-process intent path;
+        // the in-memory UserDefaults cache already has the values.
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseStart else { return }
         beginRecording(suite: suite)

@@ -121,6 +121,10 @@ final class ParakeetEngine: TranscriptionEngine {
         return result.text
     }
 
+    func warmUp() async throws {
+        try await loadIfNeeded()
+    }
+
     // MARK: - Private
 
     private func loadIfNeeded() async throws {

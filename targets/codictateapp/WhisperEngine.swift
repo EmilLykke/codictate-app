@@ -12,6 +12,10 @@ final class WhisperEngine: TranscriptionEngine {
         return try await runBridge(wavPath: wavPath, modelPath: modelPath)
     }
 
+    func warmUp() async throws {
+        _ = try await ensureModel()
+    }
+
     // MARK: - Private
 
     private func ensureModel() async throws -> String {
