@@ -13,6 +13,7 @@ private enum KbdSuite {
     static let keepaliveStartKey = "kbdKeepaliveStart"
     static let keepaliveDurationKey = "kbdKeepaliveDuration"
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
+    static let warmSessionActiveKey = "kbdWarmSessionActive"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -189,28 +190,35 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         suite.synchronize()
         viewState = .recording
 
+        let now = Date().timeIntervalSince1970
         let warmExpiry = suite.double(forKey: KbdSuite.warmSessionExpiryKey)
-        let isHostWarm = warmExpiry > 0 && Date().timeIntervalSince1970 < warmExpiry
-        NSLog("[Keyboard] startHandoff isHostWarm=\(isHostWarm) expiry=\(warmExpiry)")
+        let warmActive = suite.bool(forKey: KbdSuite.warmSessionActiveKey)
+        let hasWarmExpiry = warmExpiry > 0 && now < warmExpiry
+        let isHostWarm = warmActive && hasWarmExpiry
+        NSLog("[Keyboard] startHandoff isHostWarm=\(isHostWarm) active=\(warmActive) expiry=\(warmExpiry)")
 
         if isHostWarm {
             postDarwinNotification(kbdDarwinStartName)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 guard let self, let suite = self.suite else { return }
                 suite.synchronize()
                 let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
                 guard phase == KbdSuite.phaseStart else { return }
-                NSLog("[Keyboard] Warm start was not picked up; opening containing app")
-                guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-                self.openApp(url)
+                self.postDarwinNotification(kbdDarwinStartName)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self, let suite = self.suite else { return }
+                suite.synchronize()
+                let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
+                guard phase == KbdSuite.phaseStart else { return }
+                self.postDarwinNotification(kbdDarwinStartName)
             }
         } else {
             NSLog("[Keyboard] Opening containing app to start keyboard dictation")
             guard let url = URL(string: "codictateapp://keyboard-record") else { return }
             openApp(url)
+            startFallback(for: suite)
         }
-
-        startFallback(for: suite)
     }
 
     private func requestStop() {
