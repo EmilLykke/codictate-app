@@ -188,14 +188,13 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         suite.synchronize()
         viewState = .recording
 
-        postDarwinNotification(kbdDarwinStartName)
-
         let keepaliveStart = suite.double(forKey: KbdSuite.keepaliveStartKey)
         let keepaliveDuration = suite.double(forKey: KbdSuite.keepaliveDurationKey)
         let isHostWarm = keepaliveDuration > 0 &&
             (Date().timeIntervalSince1970 - keepaliveStart) < keepaliveDuration
 
         if isHostWarm {
+            postDarwinNotification(kbdDarwinStartName)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self else { return }
                 guard let suite = self.suite else { return }
@@ -203,22 +202,11 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
                 guard phase == KbdSuite.phaseStart else { return }
                 guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-                self.extensionContext?.open(url) { _ in }
+                self.openApp(url)
             }
         } else {
             guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-            extensionContext?.open(url) { [weak self] ok in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    if !ok {
-                        self.stopStartFallback()
-                        self.viewState = .error("Could not open Codictate.")
-                        suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
-                        suite.removeObject(forKey: KbdSuite.wavFileKey)
-                        suite.synchronize()
-                    }
-                }
-            }
+            openApp(url)
         }
 
         startFallback(for: suite)
@@ -246,6 +234,22 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             CFNotificationName(rawValue: name as CFString),
             nil, nil, true
         )
+    }
+
+    private func openApp(_ url: URL) {
+        extensionContext?.open(url) { [weak self] ok in
+            guard let self, !ok else { return }
+            DispatchQueue.main.async {
+                var responder: UIResponder? = self as UIResponder
+                while let r = responder {
+                    if let app = r as? UIApplication {
+                        app.open(url, options: [:], completionHandler: nil)
+                        return
+                    }
+                    responder = r.next
+                }
+            }
+        }
     }
 
     private func isKeyboardConsumableSession(_ suite: UserDefaults) -> Bool {

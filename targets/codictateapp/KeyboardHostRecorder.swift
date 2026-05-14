@@ -1011,9 +1011,7 @@ final class KeyboardHostRecorder: NSObject {
         switch state {
         case .active:
             attemptStart()
-        case .background:
-            attemptStart()
-        case .inactive:
+        case .background, .inactive:
             activationObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.didBecomeActiveNotification,
                 object: nil,

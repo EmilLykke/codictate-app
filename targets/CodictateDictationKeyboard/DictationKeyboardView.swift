@@ -219,7 +219,7 @@ final class DictationKeyboardView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor(red: 0.812, green: 0.831, blue: 0.859, alpha: 1)
+        backgroundColor = .clear
         build()
         dictateButton.setIcon("mic.fill", size: 16)
     }
@@ -234,11 +234,18 @@ final class DictationKeyboardView: UIView {
 
     func apply(state: DictationViewState) {
         switch state {
-        case .idle, .result, .error:
+        case .idle, .result:
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(false)
             statusLabel.text = ""
+            statusLabel.textColor = .secondaryLabel
+        case .error(let message):
+            dictateButton.isEnabled = true
+            dictateButton.alpha = 1
+            setDictateActive(false)
+            statusLabel.text = message
+            statusLabel.textColor = .systemRed
         case .recording:
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
