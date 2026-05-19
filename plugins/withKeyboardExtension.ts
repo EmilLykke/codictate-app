@@ -652,6 +652,12 @@ function syncKeyboardExtensionAndWireHostTranscription(
       hostSourceGroup,
       appUuid,
     );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/KeyboardListenSession.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
   } else {
     console.warn(
       "[withKeyboardExtension] Could not resolve host group for ModelManager.swift / WhisperBridge.mm.",
@@ -873,7 +879,10 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         let ad = fs.readFileSync(appDelegatePath, "utf8");
         ad = removeInjectedKeyboardHostRecorder(ad);
 
-        if (!ad.includes('url.host == "keyboard-record"')) {
+        const hasKeyboardDeepLinkHandler = ad.includes(
+          "KeyboardHostRecorder.shared.handleDeepLink()",
+        );
+        if (!hasKeyboardDeepLinkHandler) {
           const originalOpenURL = `  public override func application(
     _ app: UIApplication,
     open url: URL,
@@ -886,9 +895,17 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
-    if url.scheme == "codictateapp", url.host == "keyboard-record" {
-      KeyboardHostRecorder.shared.handleDeepLink()
-      return true
+    if url.scheme == "codictateapp" {
+      switch url.host {
+      case "keyboard-record":
+        KeyboardHostRecorder.shared.handleDeepLink()
+        return true
+      case "keyboard-session", "dictation":
+        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()
+        return true
+      default:
+        break
+      }
     }
     return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
   }`;
@@ -899,8 +916,33 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
             console.log(
               "[withKeyboardExtension] Patched existing openURL handler in AppDelegate",
             );
+          } else if (
+            ad.includes('url.host == "keyboard-record"') &&
+            !ad.includes('"keyboard-session"')
+          ) {
+            ad = ad.replace(
+              `    if url.scheme == "codictateapp", url.host == "keyboard-record" {
+      KeyboardHostRecorder.shared.handleDeepLink()
+      return true
+    }`,
+              `    if url.scheme == "codictateapp" {
+      switch url.host {
+      case "keyboard-record":
+        KeyboardHostRecorder.shared.handleDeepLink()
+        return true
+      case "keyboard-session", "dictation":
+        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()
+        return true
+      default:
+        break
+      }
+    }`,
+            );
+            console.log(
+              "[withKeyboardExtension] Upgraded AppDelegate openURL to keyboard-session + dictation alias",
+            );
           } else {
-            // openURL method not present in expected format. Inject before the class closing brace.
+            // Inject before AppDelegate class ends (never into ReactNativeDelegate).
             const injectedMethod = [
               "",
               "  public override func application(",
@@ -908,18 +950,36 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
               "    open url: URL,",
               "    options: [UIApplication.OpenURLOptionsKey: Any] = [:]",
               "  ) -> Bool {",
-              '    if url.scheme == "codictateapp", url.host == "keyboard-record" {',
-              "      KeyboardHostRecorder.shared.handleDeepLink()",
-              "      return true",
+              '    if url.scheme == "codictateapp" {',
+              "      switch url.host {",
+              '      case "keyboard-record":',
+              "        KeyboardHostRecorder.shared.handleDeepLink()",
+              "        return true",
+              '      case "keyboard-session", "dictation":',
+              "        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()",
+              "        return true",
+              "      default:",
+              "        break",
+              "      }",
               "    }",
               "    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)",
               "  }",
               "",
             ].join("\n");
-            const lastBrace = ad.lastIndexOf("\n}");
-            if (lastBrace !== -1) {
+            const reactNativeDelegateIdx = ad.indexOf(
+              "class ReactNativeDelegate",
+            );
+            const appDelegateSectionEnd =
+              reactNativeDelegateIdx !== -1
+                ? reactNativeDelegateIdx
+                : ad.length;
+            const appDelegateSection = ad.slice(0, appDelegateSectionEnd);
+            const appDelegateCloseBrace = appDelegateSection.lastIndexOf("\n}");
+            if (appDelegateCloseBrace !== -1) {
               ad =
-                ad.slice(0, lastBrace) + injectedMethod + ad.slice(lastBrace);
+                ad.slice(0, appDelegateCloseBrace) +
+                injectedMethod +
+                ad.slice(appDelegateCloseBrace);
               console.log(
                 "[withKeyboardExtension] Injected openURL handler into AppDelegate (no existing method found)",
               );

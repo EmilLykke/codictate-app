@@ -11,7 +11,8 @@ import {
   View,
 } from 'react-native'
 import { Stack } from 'expo-router'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useFocusEffect } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Animated from 'react-native-reanimated'
 import {
@@ -22,6 +23,10 @@ import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings
 import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
+import {
+  endKeyboardWarmSession,
+  isKeyboardWarmSessionActive,
+} from 'codictate-dictation'
 import {
   type NativeModelState,
   useNativeModel,
@@ -64,6 +69,18 @@ function DictationScreen() {
     start: 0,
     end: 0,
   })
+  const [isKeyboardWarmActive, setIsKeyboardWarmActive] = useState(false)
+
+  const refreshWarmSession = useCallback(() => {
+    if (process.env.EXPO_OS !== 'ios') return
+    void isKeyboardWarmSessionActive().then(setIsKeyboardWarmActive)
+  }, [])
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshWarmSession()
+    }, [refreshWarmSession])
+  )
 
   const isRecording = dictState === 'recording'
   const isProcessing = dictState === 'processing'
@@ -115,6 +132,33 @@ function DictationScreen() {
       ]}
       behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
     >
+      {isKeyboardWarmActive ? (
+        <View style={styles.warmBanner}>
+          <Text style={styles.warmBannerText} selectable>
+            Keyboard session active — dictate from any app without reopening
+            Codictate.
+          </Text>
+          <Pressable
+            onPress={() => {
+              void (async () => {
+                await endKeyboardWarmSession()
+                setIsKeyboardWarmActive(false)
+                await Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success
+                )
+              })()
+            }}
+            style={({ pressed }) => [
+              styles.warmBannerButton,
+              pressed ? styles.warmBannerButtonPressed : null,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="End keyboard session"
+          >
+            <Text style={styles.warmBannerButtonText}>End session</Text>
+          </Pressable>
+        </View>
+      ) : null}
       <View style={styles.resultSlot}>
         <CardDictationComposer
           value={draft}
@@ -224,6 +268,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 8,
     gap: 12,
+  },
+  warmBanner: {
+    width: '100%',
+    maxWidth: 368,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 140, 60, 0.12)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 140, 60, 0.35)',
+    padding: 12,
+    gap: 10,
+  },
+  warmBannerText: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 15,
+    color: appColors.foreground,
+    lineHeight: 20,
+  },
+  warmBannerButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 140, 60, 0.25)',
+  },
+  warmBannerButtonPressed: {
+    opacity: 0.75,
+  },
+  warmBannerButtonText: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 15,
+    fontWeight: '600',
+    color: appColors.foreground,
   },
   resultSlot: {
     flex: 1,

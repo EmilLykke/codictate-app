@@ -22,6 +22,10 @@ enum KeyboardDictationBridge {
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
     static let warmSessionActiveKey = "kbdWarmSessionActive"
     static let warmSessionHeartbeatKey = "kbdWarmSessionHeartbeat"
+    /// True only while AVAudioEngine listen session is running (proven background mic path).
+    static let listenSessionReadyKey = "kbdListenSessionReady"
+    /// User-configurable warm window (seconds). Default 60. Read by host at runtime.
+    static let warmSessionDurationKey = "kbdWarmSessionDurationSeconds"
 
     static let phaseIdle = "idle"
     static let phaseStart = "start"
@@ -46,6 +50,9 @@ enum DictationNotification {
     static let stateChanged = Notification.Name("codictate.dictation.stateChanged")
     static let transcriptReady = Notification.Name("codictate.dictation.transcriptReady")
     static let failed = Notification.Name("codictate.dictation.failed")
+    /// Posted when keyboard warm session starts, ends, or is opened from Live Activity.
+    static let keyboardWarmSessionChanged = Notification.Name("codictate.dictation.keyboardWarmSessionChanged")
+    static let endKeyboardWarmSession = Notification.Name("codictate.dictation.endKeyboardWarmSession")
 }
 
 /// Selects between ParakeetEngine and WhisperEngine based on the user's
@@ -137,6 +144,7 @@ final class DictationLiveActivityManager {
     static let shared = DictationLiveActivityManager()
     private var currentActivityID: String?
     private var recordingStartDate: Date?
+    private var dismissalObserverTask: Task<Void, Never>?
 
     private init() {}
 
@@ -222,9 +230,11 @@ final class DictationLiveActivityManager {
             await activity.update(ActivityContent(state: state, staleDate: nil))
             NSLog("[LiveActivity] Updated to standby")
         }
+        beginObservingDismissal(for: activity)
     }
 
     func end() {
+        stopObservingDismissal()
         let activitiesToEnd: [Activity<DictationActivityAttributes>]
         if let activity = trackedActivity() {
             activitiesToEnd = [activity]
@@ -289,6 +299,39 @@ final class DictationLiveActivityManager {
             await activity.update(ActivityContent(state: state, staleDate: nil))
         }
     }
+
+    /// Ends keyboard warm session when the user dismisses the standby Live Activity.
+    /// Only `.dismissed` is handled. `.ended` also fires on content updates and programmatic
+    /// teardown; treating it as user dismiss was clearing warm flags after every dictation.
+    private func beginObservingDismissal(for activity: Activity<DictationActivityAttributes>) {
+        stopObservingDismissal()
+        let activityID = activity.id
+        dismissalObserverTask = Task { @MainActor in
+            for await state in activity.activityStateUpdates {
+                guard !Task.isCancelled else { return }
+                switch state {
+                case .dismissed:
+                    NSLog("[LiveActivity] Activity \(activityID) dismissed; ending keyboard warm session")
+                    KeyboardHostRecorder.shared.endKeyboardWarmSession(userInitiated: true)
+                    return
+                case .ended:
+                    NSLog("[LiveActivity] Activity \(activityID) ended (ignored for warm session)")
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func stopObservingDismissal() {
+        dismissalObserverTask?.cancel()
+        dismissalObserverTask = nil
+    }
+
+    /// Called before programmatically ending the activity to avoid re-entrant warm-session teardown.
+    func cancelDismissalObserver() {
+        stopObservingDismissal()
+    }
 }
 
 // MARK: - Darwin IPC (keyboard extension to host app)
@@ -330,16 +373,21 @@ final class KeyboardHostRecorder: NSObject {
     private var warmMicTimer: Timer?
     private var warmMicPollTimer: Timer?
     private var keyboardBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var warmSessionBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var darwinPickupBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var transcriptFallbackWorkItem: DispatchWorkItem?
     private var activationObserver: NSObjectProtocol?
     private var didInstallNotificationObservers = false
+    /// Warm mic was paused (not torn down) for an Action Button recording.
+    private var warmSessionPausedForIntent = false
 
     /// Auto-stop fallback in case no entry point requests stop (covers stuck-in-background).
     private static let autoStopAfterSeconds: TimeInterval = 60
     /// Longer auto-stop for Action Button recordings (5 minutes).
     private static let intentAutoStopAfterSeconds: TimeInterval = 300
-    /// Keeps a real microphone session alive so follow-up keyboard starts can avoid app switching.
-    private static let warmMicSessionSeconds: TimeInterval = 60
+    private static let defaultWarmSessionSeconds: TimeInterval = 60
+    private static let minWarmSessionSeconds: TimeInterval = 30
+    private static let maxWarmSessionSeconds: TimeInterval = 1800
     private static let warmMicHeartbeatInterval: TimeInterval = 0.25
     /// Short background task fallback in case the warm microphone session cannot start.
     private static let keyboardKeepaliveSeconds: TimeInterval = 15
@@ -354,6 +402,10 @@ final class KeyboardHostRecorder: NSObject {
         AVLinearPCMIsFloatKey: false,
         AVLinearPCMIsBigEndianKey: false,
     ]
+
+    /// `AVAudioSession.ErrorCode.cannotInterruptOthers` — background app cannot re-activate
+    /// a session that would interrupt the foreground app; warm listen uses mixWithOthers instead.
+    private static let cannotInterruptOthersCode = 560_557_684
 
     private override init() {
         super.init()
@@ -374,9 +426,19 @@ final class KeyboardHostRecorder: NSObject {
     /// Installs observers synchronously so they are ready before `applicationDidBecomeActive` fires.
     func bootstrap() {
         NSLog("[KeyboardHost] bootstrap() - installing observers")
+        ensureDefaultWarmDurationConfigured()
         installNotificationObservers()
         ParakeetModelManager.shared.installObserver()
         recoverStaleState()
+        resumeKeyboardListenSessionIfNeeded()
+    }
+
+    private func ensureDefaultWarmDurationConfigured() {
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        if suite.object(forKey: KeyboardDictationBridge.warmSessionDurationKey) == nil {
+            suite.set(Int(Self.defaultWarmSessionSeconds), forKey: KeyboardDictationBridge.warmSessionDurationKey)
+            suite.synchronize()
+        }
     }
 
     /// Reset App Group phases left over from a previous crash or force-quit.
@@ -411,37 +473,25 @@ final class KeyboardHostRecorder: NSObject {
             }
         case KeyboardDictationBridge.phaseRecording,
              KeyboardDictationBridge.phaseStopRequested,
-             KeyboardDictationBridge.phaseProcessing:
-            NSLog("[KeyboardHost] Stale phase '\(phase)' at bootstrap; resetting to idle.")
-            suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-            suite.synchronize()
-            Self.reloadControlWidget()
-            if #available(iOS 16.2, *) {
-                DictationLiveActivityManager.shared.end()
-            }
-        case KeyboardDictationBridge.phaseReady,
+             KeyboardDictationBridge.phaseProcessing,
+             KeyboardDictationBridge.phaseReady,
              KeyboardDictationBridge.phaseFailed:
-            NSLog("[KeyboardHost] Stale phase '\(phase)' at bootstrap; resetting to idle.")
-            suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-            suite.synchronize()
-            Self.reloadControlWidget()
-            if #available(iOS 16.2, *) {
-                DictationLiveActivityManager.shared.end()
-            }
+            NSLog("[KeyboardHost] Stale phase '\(phase)' at bootstrap; resetting phase to idle (keeping warm session).")
+            resetDictationPhaseToIdle(suite: suite, endLiveActivity: true)
         default:
             break
+        }
+    }
+
+    private func resetDictationPhaseToIdle(suite: UserDefaults, endLiveActivity: Bool) {
+        suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
+        suite.synchronize()
+        Self.reloadControlWidget()
+        if endLiveActivity, #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.end()
         }
     }
 
@@ -467,6 +517,12 @@ final class KeyboardHostRecorder: NSObject {
             name: DictationNotification.cancel,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEndKeyboardWarmSessionNotification(_:)),
+            name: DictationNotification.endKeyboardWarmSession,
+            object: nil
+        )
         // Pick up pending start writes from App Intent (which runs while app is suspended).
         NotificationCenter.default.addObserver(
             self,
@@ -479,6 +535,18 @@ final class KeyboardHostRecorder: NSObject {
             self,
             selector: #selector(handleAudioInterruption(_:)),
             name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillResignActive),
+            name: UIApplication.willResignActiveNotification,
             object: nil
         )
 
@@ -523,12 +591,24 @@ final class KeyboardHostRecorder: NSObject {
         cancel()
     }
 
+    @objc private func handleEndKeyboardWarmSessionNotification(_ note: Notification) {
+        endKeyboardWarmSession(userInitiated: true)
+    }
+
+    @objc private func handleAppDidEnterBackground() {
+        resumeKeyboardListenSessionIfNeeded()
+    }
+
+    @objc private func handleAppWillResignActive() {
+        resumeKeyboardListenSessionIfNeeded()
+    }
+
     @objc private func handleAudioInterruption(_ note: Notification) {
         guard let info = note.userInfo,
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-        if type == .ended, recorder != nil || warmMicRecorder != nil {
-            NSLog("[KeyboardHost] Audio interruption ended while recording — restoring session")
+        if type == .ended {
+            NSLog("[KeyboardHost] Audio interruption ended — restoring session")
             let session = AVAudioSession.sharedInstance()
             do {
                 try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
@@ -536,10 +616,12 @@ final class KeyboardHostRecorder: NSObject {
             } catch {
                 NSLog("[KeyboardHost] Failed to restore session after interruption: \(error)")
             }
+            resumeKeyboardListenSessionIfNeeded()
         }
     }
 
     @objc private func handleAppActivation() {
+        resumeKeyboardListenSessionIfNeeded()
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         // Force a reload from the App Group container to pick up writes from the keyboard extension
@@ -562,8 +644,36 @@ final class KeyboardHostRecorder: NSObject {
         NSLog("[KeyboardHost] handleDarwinStart fired, recorder=\(recorder != nil)")
         transcriptFallbackWorkItem?.cancel()
         transcriptFallbackWorkItem = nil
+        resumeKeyboardListenSessionIfNeeded()
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
+        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? KeyboardDictationBridge.phaseIdle
+        if source == KeyboardDictationBridge.sourceKeyboard,
+           KeyboardListenSession.shared.isRunning,
+           phase == KeyboardDictationBridge.phaseStart || phase == KeyboardDictationBridge.phaseStopRequested {
+            NSLog("[KeyboardHost] Darwin start handled by listen-session poll")
+            return
+        }
         guard recorder == nil else { return }
+        beginDarwinPickupBackgroundTask()
         attemptDarwinStartPickup(retryCount: 0)
+    }
+
+    private func beginDarwinPickupBackgroundTask() {
+        guard darwinPickupBackgroundTask == .invalid else { return }
+        darwinPickupBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "CodictateDarwinKeyboardStart"
+        ) { [weak self] in
+            self?.endDarwinPickupBackgroundTask()
+        }
+    }
+
+    private func endDarwinPickupBackgroundTask() {
+        guard darwinPickupBackgroundTask != .invalid else { return }
+        let task = darwinPickupBackgroundTask
+        darwinPickupBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
     }
 
     private func attemptDarwinStartPickup(retryCount: Int) {
@@ -576,10 +686,13 @@ final class KeyboardHostRecorder: NSObject {
         if phase == KeyboardDictationBridge.phaseStart {
             let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? KeyboardDictationBridge.sourceHost
             startSessionInternal(suite: suite, source: source)
+            endDarwinPickupBackgroundTask()
         } else if retryCount < 3 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                 self?.attemptDarwinStartPickup(retryCount: retryCount + 1)
             }
+        } else {
+            endDarwinPickupBackgroundTask()
         }
     }
 
@@ -595,6 +708,42 @@ final class KeyboardHostRecorder: NSObject {
         DispatchQueue.main.async { [weak self] in
             self?.handleDeepLinkOnMain()
         }
+    }
+
+    /// Live Activity tap (`codictateapp://keyboard-session` or legacy `dictation`).
+    /// Native-only: does not route through Expo Linking.
+    func handleKeyboardSessionDeepLink() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let active = self.isKeyboardWarmSessionActive()
+            NSLog("[KeyboardHost] keyboard-session deep link; warmActive=\(active)")
+            NotificationCenter.default.post(
+                name: DictationNotification.keyboardWarmSessionChanged,
+                object: nil,
+                userInfo: ["active": active, "openedFromLiveActivity": true]
+            )
+        }
+    }
+
+    /// Ends keyboard warm session (Live Activity dismiss, Settings, or in-app control).
+    func endKeyboardWarmSession(userInitiated: Bool = false) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.warmSessionPausedForIntent = false
+            self.stopWarmMicSession(endingActivity: true)
+            NotificationCenter.default.post(
+                name: DictationNotification.keyboardWarmSessionChanged,
+                object: nil,
+                userInfo: ["active": false, "userInitiated": userInitiated]
+            )
+            NSLog("[KeyboardHost] Keyboard warm session ended (userInitiated=\(userInitiated))")
+        }
+    }
+
+    func isKeyboardWarmSessionActive() -> Bool {
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return false }
+        suite.synchronize()
+        return KeyboardListenSession.shared.isReady(suite: suite)
     }
 
     /// Programmatic start (JS module). Generates a filename and writes
@@ -644,7 +793,11 @@ final class KeyboardHostRecorder: NSObject {
     /// checks, app-state gates, and Live Activity creation to avoid race conditions.
     func startRecordingForIntent() {
         guard recorder == nil else { return }
-        stopWarmMicSession(endingActivity: false)
+        if isKeyboardWarmSessionActive() {
+            pauseWarmMicSession()
+        } else {
+            stopWarmMicSession(endingActivity: false)
+        }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey) ?? ""
         guard phase == KeyboardDictationBridge.phaseStart else { return }
@@ -654,22 +807,8 @@ final class KeyboardHostRecorder: NSObject {
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
-            )
-            do {
-                try session.setActive(true, options: [])
-            } catch {
-                NSLog("[KeyboardHost] Intent setActive failed (\(error)), resetting and retrying")
-                try? session.setActive(false, options: [])
-                try session.setActive(true, options: [])
-            }
-        } catch let error as NSError {
-            fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
+        guard prepareRecordingSession(allowBackgroundWithoutActivate: false) else {
+            fail(suite, "Audio session error. Open Codictate once, then try again.")
             return
         }
 
@@ -782,7 +921,10 @@ final class KeyboardHostRecorder: NSObject {
     private func startSessionInternal(suite: UserDefaults, source: String) {
         NSLog("[KeyboardHost] startSessionInternal source=\(source)")
         if source == KeyboardDictationBridge.sourceKeyboard,
-           promoteWarmMicRecordingIfNeeded(suite: suite) {
+           isKeyboardListenSessionRunning() {
+            // Keyboard wrote phase=start; listen-session poll picks it up within ~250ms.
+            // Do not foreground the app and do not start a second recorder here.
+            NSLog("[KeyboardHost] Keyboard start deferred to listen-session poll")
             return
         }
         if #available(iOS 17.0, *) {
@@ -845,6 +987,13 @@ final class KeyboardHostRecorder: NSObject {
                 suite.synchronize()
             }
             if self.recorder == nil {
+                let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+                    ?? KeyboardDictationBridge.sourceHost
+                if source == KeyboardDictationBridge.sourceKeyboard,
+                   KeyboardListenSession.shared.isCapturing || KeyboardListenSession.shared.isRunning {
+                    NSLog("[KeyboardHost] Stop deferred to keyboard listen session")
+                    return
+                }
                 if self.processWarmMicStopRequestedIfNeeded(suite: suite, completion: nil) {
                     return
                 }
@@ -924,6 +1073,7 @@ final class KeyboardHostRecorder: NSObject {
         pollTimer?.invalidate()
         pollTimer = nil
         cancelAutoStop()
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey) ?? ""
         stopWarmMicSession(endingActivity: true)
         endKeyboardKeepalive()
         recorder?.stop()
@@ -950,6 +1100,32 @@ final class KeyboardHostRecorder: NSObject {
             userInfo: ["phase": KeyboardDictationBridge.phaseFailed, "error": message]
         )
         NSLog("[KeyboardHost] Failed: \(message)")
+    }
+
+    func failPublic(_ suite: UserDefaults, _ message: String) {
+        fail(suite, message)
+    }
+
+    func notifyPhase(_ phase: String) {
+        NotificationCenter.default.post(
+            name: DictationNotification.stateChanged,
+            object: nil,
+            userInfo: ["phase": phase]
+        )
+    }
+
+    func scheduleKeyboardAutoStop() {
+        startAutoStopFallback()
+    }
+
+    func cancelKeyboardAutoStop() {
+        cancelAutoStop()
+    }
+
+    func transcribeWav(atPath path: String, suite: UserDefaults, onComplete: ((String?) -> Void)? = nil) {
+        TranscriptionRouter.shared.transcribeWav(atPath: path, suite: suite) { transcript in
+            onComplete?(transcript)
+        }
     }
 
     private func cancelActivationWait() {
@@ -1006,8 +1182,10 @@ final class KeyboardHostRecorder: NSObject {
         FileManager.default.temporaryDirectory.appendingPathComponent("codictate_warm_mic.wav")
     }
 
-    private func startWarmMicRecorder() {
-        guard warmMicRecorder == nil else { return }
+    /// Configures playAndRecord + mixWithOthers. When `allowBackgroundWithoutActivate` is true,
+    /// a cannotInterruptOthers error on setActive is tolerated so AVAudioRecorder can start on
+    /// an already-active warm listen session while the user stays in another app.
+    private func prepareRecordingSession(allowBackgroundWithoutActivate: Bool) -> Bool {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
@@ -1015,118 +1193,203 @@ final class KeyboardHostRecorder: NSObject {
                 mode: .default,
                 options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
             )
-            do {
-                try session.setActive(true, options: [])
-            } catch {
-                NSLog("[KeyboardHost] Warm mic setActive failed (\(error)), resetting and retrying")
-                try? session.setActive(false, options: [])
-                try session.setActive(true, options: [])
-            }
-
-            let rec = try AVAudioRecorder(url: warmMicURL(), settings: Self.recordingSettings)
-            guard rec.prepareToRecord(), rec.record(), rec.isRecording else {
-                NSLog("[KeyboardHost] Warm mic recorder failed to start")
-                return
-            }
-            warmMicRecorder = rec
-            NSLog("[KeyboardHost] Warm mic recorder started")
         } catch {
-            NSLog("[KeyboardHost] Warm mic recorder error: \(error.localizedDescription)")
+            NSLog("[KeyboardHost] setCategory failed: \(error.localizedDescription)")
+            return false
+        }
+
+        if warmMicRecorder?.isRecording == true || recorder?.isRecording == true {
+            NSLog("[KeyboardHost] Skipping setActive; capture already running")
+            return true
+        }
+        if KeyboardListenSession.shared.isRunning {
+            NSLog("[KeyboardHost] Skipping setActive; listen session engine running")
+            return true
+        }
+
+        do {
+            try session.setActive(true, options: [])
+            return true
+        } catch let error as NSError {
+            if error.code == Self.cannotInterruptOthersCode, allowBackgroundWithoutActivate {
+                NSLog("[KeyboardHost] setActive cannotInterruptOthers; continuing for warm/background")
+                return true
+            }
+            if UIApplication.shared.applicationState == .active {
+                NSLog("[KeyboardHost] setActive failed (\(error)); retrying from foreground")
+                do {
+                    try session.setActive(false, options: [])
+                    try session.setActive(true, options: [])
+                    return true
+                } catch {
+                    NSLog("[KeyboardHost] setActive retry failed: \(error.localizedDescription)")
+                    return false
+                }
+            }
+            NSLog("[KeyboardHost] setActive failed in background: \(error.localizedDescription)")
+            return allowBackgroundWithoutActivate
         }
     }
 
-    private func beginWarmMicSession(suite: UserDefaults) {
-        startWarmMicRecorder()
-        guard warmMicRecorder?.isRecording == true else {
-            scheduleKeyboardKeepaliveEnd()
-            return
-        }
-
-        let expiry = Date().addingTimeInterval(Self.warmMicSessionSeconds)
-        suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.keepaliveStartKey)
-        suite.set(Self.warmMicSessionSeconds, forKey: KeyboardDictationBridge.keepaliveDurationKey)
-        suite.set(expiry.timeIntervalSince1970, forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-        suite.set(true, forKey: KeyboardDictationBridge.warmSessionActiveKey)
-        suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-        suite.synchronize()
-
-        warmMicTimer?.invalidate()
-        warmMicTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.warmMicSessionSeconds,
-            repeats: false
-        ) { [weak self] _ in
-            self?.stopWarmMicSession(endingActivity: true)
-        }
-        RunLoop.main.add(warmMicTimer!, forMode: .common)
-
-        warmMicPollTimer?.invalidate()
-        warmMicPollTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.warmMicHeartbeatInterval,
-            repeats: true
-        ) { [weak self] _ in
-            self?.refreshWarmMicHeartbeatAndCheckPending()
-        }
-        RunLoop.main.add(warmMicPollTimer!, forMode: .common)
-
-        if #available(iOS 16.2, *) {
-            DictationLiveActivityManager.shared.updateToStandby()
-        }
-        NSLog("[KeyboardHost] Warm mic session active until \(expiry)")
+    private func isKeyboardListenSessionRunning() -> Bool {
+        KeyboardListenSession.shared.isRunning
     }
 
-    private func stopWarmMicSession(endingActivity: Bool) {
+    private func startKeyboardListenSession(suite: UserDefaults) {
+        publishWarmSessionFlags(suite: suite)
+        KeyboardListenSession.shared.start(suite: suite)
+    }
+
+    private func stopKeyboardListenSession() {
+        KeyboardListenSession.shared.stop()
+    }
+
+    private static func configuredWarmSessionSeconds(suite: UserDefaults) -> TimeInterval {
+        let stored = suite.integer(forKey: KeyboardDictationBridge.warmSessionDurationKey)
+        let seconds = stored > 0 ? TimeInterval(stored) : defaultWarmSessionSeconds
+        return min(max(seconds, minWarmSessionSeconds), maxWarmSessionSeconds)
+    }
+
+    static func clampWarmSessionSeconds(_ seconds: Int) -> Int {
+        Int(min(max(TimeInterval(seconds), minWarmSessionSeconds), maxWarmSessionSeconds))
+    }
+
+    private static func isWarmSessionConfigured(suite: UserDefaults, now: TimeInterval) -> Bool {
+        let warmActive = suite.bool(forKey: KeyboardDictationBridge.warmSessionActiveKey)
+        let warmExpiry = suite.double(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
+        return warmActive && warmExpiry > 0 && now < warmExpiry
+    }
+
+    /// Stops listen engine for Action Button; keeps warm expiry flags for resume.
+    private func pauseWarmMicSession() {
+        warmSessionPausedForIntent = true
+        teardownWarmMicHardware(stopPollTimer: false)
+        KeyboardListenSession.shared.pauseKeepingWarmFlags()
+        NSLog("[KeyboardHost] Listen session paused for intent recording")
+    }
+
+    /// Stops standby mic for an active keyboard dictation but preserves warm session App Group flags.
+    private func pauseWarmMicForKeyboardRecording() {
         warmMicTimer?.invalidate()
         warmMicTimer = nil
         warmMicPollTimer?.invalidate()
         warmMicPollTimer = nil
+        teardownWarmMicHardware(stopPollTimer: false)
+        NSLog("[KeyboardHost] Warm mic paused for keyboard recording (flags retained)")
+    }
 
+    private func teardownWarmMicHardware(stopPollTimer: Bool) {
+        if stopPollTimer {
+            warmMicPollTimer?.invalidate()
+            warmMicPollTimer = nil
+        }
         if let rec = warmMicRecorder {
             rec.stop()
             warmMicRecorder = nil
             try? FileManager.default.removeItem(at: warmMicURL())
-            NSLog("[KeyboardHost] Warm mic recorder stopped")
+        }
+    }
+
+    /// Restores standby mic after Action Button if keyboard warm session is still valid.
+    private func resumeWarmMicSessionIfNeeded(suite: UserDefaults) {
+        guard warmSessionPausedForIntent else { return }
+        warmSessionPausedForIntent = false
+        let now = Date().timeIntervalSince1970
+        guard Self.isWarmSessionConfigured(suite: suite, now: now) else {
+            NSLog("[KeyboardHost] Warm session expired during intent; not resuming")
+            return
+        }
+        KeyboardListenSession.shared.start(suite: suite)
+        guard isKeyboardListenSessionRunning() else {
+            NSLog("[KeyboardHost] Listen session resume failed after intent")
+            return
+        }
+        NSLog("[KeyboardHost] Listen session resumed after intent")
+    }
+
+    /// Writes warm-session expiry flags. `listenSessionReady` is set only after the engine is running.
+    private func publishWarmSessionFlags(suite: UserDefaults) {
+        let duration = Self.configuredWarmSessionSeconds(suite: suite)
+        let expiry = Date().addingTimeInterval(duration)
+        suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.keepaliveStartKey)
+        suite.set(duration, forKey: KeyboardDictationBridge.keepaliveDurationKey)
+        suite.set(expiry.timeIntervalSince1970, forKey: KeyboardDictationBridge.warmSessionExpiryKey)
+        suite.set(true, forKey: KeyboardDictationBridge.warmSessionActiveKey)
+        suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
+        suite.synchronize()
+        warmSessionPausedForIntent = false
+        startWarmSessionBackgroundTask()
+        NSLog("[KeyboardHost] Warm session flags published until \(expiry)")
+    }
+
+    private func beginWarmMicSession(suite: UserDefaults) {
+        startKeyboardListenSession(suite: suite)
+        if !KeyboardListenSession.shared.isRunning {
+            NSLog("[KeyboardHost] Warm listen session failed to start after dictation stop")
+        } else {
+            NSLog("[KeyboardHost] Warm listen session active after dictation stop")
+        }
+    }
+
+    /// Restarts the background listen engine when warm-window flags are still valid.
+    private func resumeKeyboardListenSessionIfNeeded() {
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        suite.synchronize()
+        let now = Date().timeIntervalSince1970
+        guard Self.isWarmSessionConfigured(suite: suite, now: now) else { return }
+        guard !KeyboardListenSession.shared.isRunning else { return }
+        NSLog("[KeyboardHost] Resuming keyboard listen session")
+        publishWarmSessionFlags(suite: suite)
+        KeyboardListenSession.shared.start(suite: suite)
+    }
+
+    private func startWarmSessionBackgroundTask() {
+        guard warmSessionBackgroundTask == .invalid else { return }
+        warmSessionBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "CodictateWarmListenSession"
+        ) { [weak self] in
+            self?.endWarmSessionBackgroundTask()
+        }
+        if warmSessionBackgroundTask == .invalid {
+            NSLog("[KeyboardHost] Warm session background task could not start")
+        }
+    }
+
+    private func endWarmSessionBackgroundTask() {
+        guard warmSessionBackgroundTask != .invalid else { return }
+        let task = warmSessionBackgroundTask
+        warmSessionBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
+    }
+
+    private func stopWarmMicSession(endingActivity: Bool, deactivateAudio: Bool = true) {
+        warmSessionPausedForIntent = false
+        warmMicTimer?.invalidate()
+        warmMicTimer = nil
+        warmMicPollTimer?.invalidate()
+        warmMicPollTimer = nil
+        endWarmSessionBackgroundTask()
+        endDarwinPickupBackgroundTask()
+
+        if endingActivity, #available(iOS 16.2, *) {
+            DictationLiveActivityManager.shared.cancelDismissalObserver()
         }
 
+        teardownWarmMicHardware(stopPollTimer: false)
+        stopKeyboardListenSession()
+        NSLog("[KeyboardHost] Keyboard listen session stopped")
+
         let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName)
-        suite?.removeObject(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-        suite?.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-        suite?.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
         suite?.removeObject(forKey: KeyboardDictationBridge.keepaliveStartKey)
         suite?.removeObject(forKey: KeyboardDictationBridge.keepaliveDurationKey)
         suite?.synchronize()
 
-        if recorder == nil {
+        if deactivateAudio, recorder == nil, !KeyboardListenSession.shared.isRunning {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
         if endingActivity, #available(iOS 16.2, *) {
             DictationLiveActivityManager.shared.end()
         }
-    }
-
-    private func refreshWarmMicHeartbeatAndCheckPending() {
-        guard recorder == nil else { return }
-        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
-        CFPreferencesAppSynchronize(KeyboardDictationBridge.suiteName as CFString)
-        suite.synchronize()
-        if warmMicRecorder?.isRecording == true {
-            suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-            suite.set(true, forKey: KeyboardDictationBridge.warmSessionActiveKey)
-            suite.synchronize()
-        } else {
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-            suite.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-            suite.synchronize()
-            return
-        }
-
-        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey)
-            ?? KeyboardDictationBridge.phaseIdle
-        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
-            ?? KeyboardDictationBridge.sourceHost
-        guard phase == KeyboardDictationBridge.phaseStart,
-              source == KeyboardDictationBridge.sourceKeyboard else { return }
-        NSLog("[KeyboardHost] Warm mic poll detected pending keyboard start")
-        startSessionInternal(suite: suite, source: source)
     }
 
     private func endKeyboardKeepalive() {
@@ -1135,8 +1398,7 @@ final class KeyboardHostRecorder: NSObject {
         let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName)
         suite?.removeObject(forKey: KeyboardDictationBridge.keepaliveStartKey)
         suite?.removeObject(forKey: KeyboardDictationBridge.keepaliveDurationKey)
-        suite?.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-        suite?.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
+        // Do not clear warm session flags here — they belong to the warm mic session, not the BG task.
         suite?.synchronize()
         guard keyboardBackgroundTask != .invalid else { return }
         let task = keyboardBackgroundTask
@@ -1163,12 +1425,22 @@ final class KeyboardHostRecorder: NSObject {
 
         if source == KeyboardDictationBridge.sourceKeyboard {
             beginWarmMicSession(suite: suite)
+            if #available(iOS 16.2, *) {
+                DictationLiveActivityManager.shared.end()
+            }
+            NotificationCenter.default.post(
+                name: DictationNotification.keyboardWarmSessionChanged,
+                object: nil,
+                userInfo: ["active": KeyboardListenSession.shared.isReady(suite: suite)]
+            )
             return
         }
 
         guard source == KeyboardDictationBridge.sourceIntent else {
             return
         }
+
+        resumeWarmMicSessionIfNeeded(suite: suite)
 
         let fallback = DispatchWorkItem { [weak self, weak suite] in
             guard let self, let suite else { return }
@@ -1230,8 +1502,17 @@ final class KeyboardHostRecorder: NSObject {
         case .active:
             attemptStart()
         case .background, .inactive:
-            if warmMicRecorder?.isRecording == true {
-                NSLog("[KeyboardHost] Warm mic active — starting keyboard recording in background")
+            let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+                ?? KeyboardDictationBridge.sourceHost
+            let warmListenActive = source == KeyboardDictationBridge.sourceKeyboard
+                && Self.isWarmSessionConfigured(
+                    suite: suite,
+                    now: Date().timeIntervalSince1970
+                )
+            if isKeyboardListenSessionRunning() || warmListenActive {
+                NSLog(
+                    "[KeyboardHost] Background keyboard start (listenEngine=\(isKeyboardListenSessionRunning()), warmFlags=\(warmListenActive))"
+                )
                 attemptStart()
             } else {
                 activationObserver = NotificationCenter.default.addObserver(
@@ -1283,15 +1564,23 @@ final class KeyboardHostRecorder: NSObject {
 
     private func beginRecording(suite: UserDefaults) {
         NSLog("[KeyboardHost] beginRecording called")
-        stopWarmMicSession(endingActivity: false)
+        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
+            ?? KeyboardDictationBridge.sourceHost
+        let isKeyboard = source == KeyboardDictationBridge.sourceKeyboard
+        let warmListen = isKeyboard
+            && Self.isWarmSessionConfigured(suite: suite, now: Date().timeIntervalSince1970)
+
+        if source == KeyboardDictationBridge.sourceIntent, isKeyboardWarmSessionActive() {
+            pauseWarmMicSession()
+        } else if !isKeyboard {
+            stopWarmMicSession(endingActivity: false)
+        }
 
         guard let url = outputURL(suite: suite) else {
             fail(suite, "Could not create recording path (App Group missing?).")
             return
         }
 
-        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
-            ?? KeyboardDictationBridge.sourceHost
         let isIntentStart = source == KeyboardDictationBridge.sourceIntent
 
         beginKeyboardKeepaliveIfNeeded(source: source)
@@ -1307,25 +1596,15 @@ final class KeyboardHostRecorder: NSObject {
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
-            )
-            do {
-                try session.setActive(true, options: [])
-            } catch {
-                NSLog("[KeyboardHost] setActive failed (\(error)), resetting and retrying")
-                try? session.setActive(false, options: [])
-                try session.setActive(true, options: [])
-            }
-            NSLog("[KeyboardHost] Audio session ready")
-        } catch let error as NSError {
-            NSLog("[KeyboardHost] Audio session FAILED: domain=\(error.domain) code=\(error.code) \(error.localizedDescription)")
-            fail(suite, "Audio session error (\(error.code)): \(error.localizedDescription)")
+        guard prepareRecordingSession(allowBackgroundWithoutActivate: warmListen) else {
+            NSLog("[KeyboardHost] Audio session prepare failed (warmListen=\(warmListen))")
+            fail(suite, "Audio session error. Open Codictate once, then try again.")
             return
+        }
+        NSLog("[KeyboardHost] Audio session ready")
+
+        if isKeyboard {
+            teardownWarmMicHardware(stopPollTimer: false)
         }
 
         do {
@@ -1441,7 +1720,11 @@ final class KeyboardHostRecorder: NSObject {
                     return
                 }
             }
-            startWarmMicRecorder()
+            // Start listen session while the audio session is still hot from this recording.
+            beginWarmMicSession(suite: suite)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.resumeKeyboardListenSessionIfNeeded()
+            }
         } else {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
@@ -1509,11 +1792,7 @@ final class KeyboardHostRecorder: NSObject {
             return true
         }
 
-        suite.removeObject(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
         suite.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.keepaliveStartKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.keepaliveDurationKey)
         suite.set(KeyboardDictationBridge.phaseProcessing, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
         suite.synchronize()
@@ -1529,70 +1808,11 @@ final class KeyboardHostRecorder: NSObject {
             userInfo: ["phase": KeyboardDictationBridge.phaseProcessing]
         )
 
-        startWarmMicRecorder()
-
         let path = wavURL.path
         NSLog("[KeyboardHost] Warm keyboard stop promoted standby capture; transcribing \(path)")
         TranscriptionRouter.shared.transcribeWav(atPath: path, suite: suite) { transcript in
             completion?(transcript)
         }
-        return true
-    }
-
-    private func promoteWarmMicRecordingIfNeeded(suite: UserDefaults) -> Bool {
-        guard recorder == nil,
-              let warmRecorder = warmMicRecorder,
-              warmRecorder.isRecording else {
-            return false
-        }
-
-        let phase = suite.string(forKey: KeyboardDictationBridge.phaseKey)
-            ?? KeyboardDictationBridge.phaseIdle
-        let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
-            ?? KeyboardDictationBridge.sourceHost
-        guard phase == KeyboardDictationBridge.phaseStart,
-              source == KeyboardDictationBridge.sourceKeyboard else {
-            return false
-        }
-        guard outputURL(suite: suite) != nil else {
-            fail(suite, "Recording file path missing.")
-            return true
-        }
-
-        warmMicTimer?.invalidate()
-        warmMicTimer = nil
-        warmMicPollTimer?.invalidate()
-        warmMicPollTimer = nil
-
-        warmMicRecorder = nil
-        recorder = warmRecorder
-        activeRecordingURL = warmMicURL()
-
-        suite.removeObject(forKey: KeyboardDictationBridge.warmSessionExpiryKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.warmSessionActiveKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.warmSessionHeartbeatKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.keepaliveStartKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.keepaliveDurationKey)
-        suite.set(KeyboardDictationBridge.phaseRecording, forKey: KeyboardDictationBridge.phaseKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-        suite.synchronize()
-        Self.reloadControlWidget()
-
-        if #available(iOS 16.2, *) {
-            _ = DictationLiveActivityManager.shared.startRecording()
-        }
-
-        NotificationCenter.default.post(
-            name: DictationNotification.stateChanged,
-            object: nil,
-            userInfo: ["phase": KeyboardDictationBridge.phaseRecording]
-        )
-
-        startPollingForStop(suite: suite)
-        startAutoStopFallback()
-
-        NSLog("[KeyboardHost] Warm mic promoted to active keyboard recording")
         return true
     }
 
@@ -1603,21 +1823,23 @@ final class KeyboardHostRecorder: NSObject {
         pollTimer?.invalidate()
         pollTimer = nil
         cancelAutoStop()
-        stopWarmMicSession(endingActivity: true)
         endKeyboardKeepalive()
         recorder?.stop()
         recorder = nil
         activeRecordingURL = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-        suite.synchronize()
-        Self.reloadControlWidget()
-        if #available(iOS 16.2, *) {
-            DictationLiveActivityManager.shared.end()
+
+        let warmStillValid = Self.isWarmSessionConfigured(
+            suite: suite,
+            now: Date().timeIntervalSince1970
+        )
+        if warmStillValid || KeyboardListenSession.shared.isRunning {
+            NSLog("[KeyboardHost] Stop before record; keeping warm listen session alive")
+            resumeKeyboardListenSessionIfNeeded()
+        } else {
+            stopWarmMicSession(endingActivity: true, deactivateAudio: true)
         }
+
+        resetDictationPhaseToIdle(suite: suite, endLiveActivity: !warmStillValid)
         NotificationCenter.default.post(
             name: DictationNotification.stateChanged,
             object: nil,

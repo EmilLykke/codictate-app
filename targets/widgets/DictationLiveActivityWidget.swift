@@ -39,7 +39,6 @@ struct DictationLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DictationActivityAttributes.self) { context in
             DictationBannerView(state: context.state)
-                .widgetURL(URL(string: "codictateapp://dictation"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -119,11 +118,10 @@ struct DictationLiveActivityWidget: Widget {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
                 }
-            } minimal: {
+            }             minimal: {
                 Image(systemName: "waveform")
                     .foregroundColor(.white)
             }
-            .widgetURL(URL(string: "codictateapp://dictation"))
         }
     }
 }

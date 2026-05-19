@@ -1,5 +1,4 @@
 import { Iceberg_400Regular } from '@expo-google-fonts/iceberg'
-import { Iceland_400Regular } from '@expo-google-fonts/iceland'
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
@@ -16,7 +15,6 @@ SplashScreen.preventAutoHideAsync()
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
-    Iceland_400Regular,
     Iceberg_400Regular,
   })
 

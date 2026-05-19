@@ -28,6 +28,10 @@ import {
   listModels,
   onModelProgress,
   setPreferredModel,
+  getKeyboardWarmDuration,
+  setKeyboardWarmDuration,
+  endKeyboardWarmSession,
+  isKeyboardWarmSessionActive,
   type ModelInfo,
   type ModelVariant,
 } from 'codictate-dictation'
@@ -68,6 +72,14 @@ const ACTION_BUTTON_SHORTCUT_URL =
   'https://www.icloud.com/shortcuts/376647f0244646a6a181f8ba1fdfe4d1'
 
 /** iOS Settings deep links are not officially supported; try common forms, then fall back. */
+const WARM_DURATION_OPTIONS = [
+  { label: '1 minute', seconds: 60 },
+  { label: '3 minutes', seconds: 180 },
+  { label: '5 minutes', seconds: 300 },
+  { label: '15 minutes', seconds: 900 },
+  { label: '30 minutes', seconds: 1800 },
+] as const
+
 const IOS_KEYBOARD_SETTINGS_URLS = [
   'App-Prefs:General&path=Keyboard/KEYBOARDS',
   'App-Prefs:General&path=Keyboard',
@@ -82,6 +94,8 @@ export function ScreenSettings() {
   const [downloadProgress, setDownloadProgress] = useState<
     Partial<Record<ModelVariant, number>>
   >({})
+  const [warmDurationSeconds, setWarmDurationSeconds] = useState(60)
+  const [isWarmSessionActive, setIsWarmSessionActive] = useState(false)
 
   useEffect(() => {
     const sub = onModelProgress((e) => {
@@ -99,10 +113,21 @@ export function ScreenSettings() {
     )
   }, [])
 
+  const refreshKeyboardWarmUi = useCallback(() => {
+    void Promise.all([
+      getKeyboardWarmDuration(),
+      isKeyboardWarmSessionActive(),
+    ]).then(([duration, active]) => {
+      setWarmDurationSeconds(duration)
+      setIsWarmSessionActive(active)
+    })
+  }, [])
+
   useFocusEffect(
     useCallback(() => {
       refreshSpeechModelsUi()
-    }, [refreshSpeechModelsUi])
+      refreshKeyboardWarmUi()
+    }, [refreshSpeechModelsUi, refreshKeyboardWarmUi])
   )
 
   const confirmDelete = (row: ModelInfo) => {
@@ -274,6 +299,78 @@ export function ScreenSettings() {
                 Open Keyboards in Settings
               </Text>
             </Pressable>
+          </SectionCard>
+
+          <SectionCard>
+            <Text style={styles.sectionLabel} selectable>
+              Keyboard warm session
+            </Text>
+            <Text style={styles.subHint} selectable>
+              After a keyboard dictation finishes, Codictate keeps the mic ready
+              so the next dictation from another app does not reopen Codictate.
+            </Text>
+            {WARM_DURATION_OPTIONS.map((option) => {
+              const selected = warmDurationSeconds === option.seconds
+              return (
+                <Pressable
+                  key={option.seconds}
+                  onPress={() => {
+                    void (async () => {
+                      await setKeyboardWarmDuration(option.seconds)
+                      setWarmDurationSeconds(option.seconds)
+                      await Haptics.selectionAsync()
+                    })()
+                  }}
+                  style={[
+                    styles.row,
+                    selected ? styles.modelSelectActive : null,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                >
+                  <Text style={styles.rowTitle} selectable>
+                    {option.label}
+                  </Text>
+                  {selected ? (
+                    <Image
+                      source="sf:checkmark.circle.fill"
+                      style={styles.modelCheckIcon}
+                      contentFit="contain"
+                      tintColor={appColors.foreground}
+                    />
+                  ) : null}
+                </Pressable>
+              )
+            })}
+            {isWarmSessionActive ? (
+              <Pressable
+                onPress={() => {
+                  void (async () => {
+                    await endKeyboardWarmSession()
+                    setIsWarmSessionActive(false)
+                    await Haptics.notificationAsync(
+                      Haptics.NotificationFeedbackType.Success
+                    )
+                  })()
+                }}
+                style={({ pressed }) => [
+                  styles.shortcutButton,
+                  pressed ? styles.rowPressed : null,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="End keyboard session"
+              >
+                <Image
+                  source="sf:xmark.circle"
+                  style={styles.shortcutIcon}
+                  contentFit="contain"
+                  tintColor="#000000"
+                />
+                <Text style={styles.shortcutButtonText}>
+                  End keyboard session
+                </Text>
+              </Pressable>
+            ) : null}
           </SectionCard>
         </>
       ) : null}

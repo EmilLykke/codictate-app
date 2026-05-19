@@ -20,6 +20,14 @@ public final class CodictateDictationModule: Module {
     private static let errorKey = "kbdDictationHostError"
     private static let sourceKey = "kbdDictationSource"
     private static let keyboardVisibleKey = "kbdKeyboardVisible"
+    private static let warmSessionDurationKey = "kbdWarmSessionDurationSeconds"
+    private static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
+    private static let warmSessionActiveKey = "kbdWarmSessionActive"
+    private static let warmSessionHeartbeatKey = "kbdWarmSessionHeartbeat"
+    private static let endKeyboardWarmSessionNotification = Notification.Name("codictate.dictation.endKeyboardWarmSession")
+    private static let defaultWarmDurationSeconds = 60
+    private static let minWarmDurationSeconds = 30
+    private static let maxWarmDurationSeconds = 1800
 
     // Mirror of `DictationNotification`.
     private static let startNotification = Notification.Name("codictate.dictation.start")
@@ -108,6 +116,33 @@ public final class CodictateDictationModule: Module {
             suite.set("idle", forKey: Self.phaseKey)
             suite.removeObject(forKey: Self.errorKey)
             suite.synchronize()
+        }
+
+        // MARK: - Keyboard warm session (native runtime; Settings write App Group only)
+
+        AsyncFunction("getKeyboardWarmDuration") { () -> Int in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return Self.defaultWarmDurationSeconds }
+            let stored = suite.integer(forKey: Self.warmSessionDurationKey)
+            if stored <= 0 {
+                return Self.defaultWarmDurationSeconds
+            }
+            return Self.clampWarmDuration(stored)
+        }
+
+        AsyncFunction("setKeyboardWarmDuration") { (seconds: Int) -> Void in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
+            suite.set(Self.clampWarmDuration(seconds), forKey: Self.warmSessionDurationKey)
+            suite.synchronize()
+        }
+
+        AsyncFunction("isKeyboardWarmSessionActive") { () -> Bool in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return false }
+            suite.synchronize()
+            return Self.isWarmSessionActive(suite: suite)
+        }
+
+        AsyncFunction("endKeyboardWarmSession") { () -> Void in
+            NotificationCenter.default.post(name: Self.endKeyboardWarmSessionNotification, object: nil)
         }
 
         // MARK: - Model management
@@ -227,6 +262,17 @@ public final class CodictateDictationModule: Module {
             let msg = (note.userInfo?["message"] as? String) ?? "Dictation failed."
             self.sendEvent("onError", ["message": msg])
         }
+    }
+
+    private static func clampWarmDuration(_ seconds: Int) -> Int {
+        min(max(seconds, minWarmDurationSeconds), maxWarmDurationSeconds)
+    }
+
+    private static func isWarmSessionActive(suite: UserDefaults) -> Bool {
+        let now = Date().timeIntervalSince1970
+        let warmActive = suite.bool(forKey: warmSessionActiveKey)
+        let warmExpiry = suite.double(forKey: warmSessionExpiryKey)
+        return warmActive && warmExpiry > 0 && now < warmExpiry
     }
 
     private func removeObservers() {

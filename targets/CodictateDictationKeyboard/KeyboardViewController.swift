@@ -10,10 +10,9 @@ private enum KbdSuite {
     static let transcriptTimestampKey = "kbdTranscriptTimestamp"
     static let sourceKey        = "kbdDictationSource"
     static let keyboardVisibleKey = "kbdKeyboardVisible"
-    static let keepaliveStartKey = "kbdKeepaliveStart"
-    static let keepaliveDurationKey = "kbdKeepaliveDuration"
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
     static let warmSessionActiveKey = "kbdWarmSessionActive"
+    static let listenSessionReadyKey = "kbdListenSessionReady"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -26,9 +25,7 @@ private enum KbdSuite {
     static let phaseFailed      = "failed"
 }
 
-// Darwin notification names (cross-process IPC to the host app).
 private let kbdDarwinStartName = "app.codictate.dictation.keyboard.start"
-private let kbdDarwinStopName  = "app.codictate.dictation.keyboard.stop"
 
 final class KeyboardViewController: UIInputViewController, DictationKeyboardViewDelegate {
 
@@ -80,8 +77,6 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         if case .error  = viewState { viewState = .idle }
         suite?.set(true, forKey: KbdSuite.keyboardVisibleKey)
         suite?.synchronize()
-        // Sync local view state from App Group. A session may already be underway
-        // from another entry point (Action Button or previous keyboard tap).
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
         let canInsertResult = suite.map { isKeyboardConsumableSession($0) } ?? false
         switch activePhase {
@@ -124,17 +119,12 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     // MARK: DictationKeyboardViewDelegate
 
     func didTapDictate() {
-        // Source of truth is the App Group phase, not the keyboard's local viewState.
-        // a session may already be underway from a different entry point (Action Button
-        // or earlier keyboard tap that left the host app foregrounded). In that case the
-        // keyboard should *toggle stop*, never re-open the host app.
         suite?.synchronize()
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
         switch activePhase {
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             requestStop()
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            // Already on its way to a result. Wait for ready, don't double-trigger.
             viewState = .processing
             startResultPolling()
         default:
@@ -187,52 +177,40 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         suite.removeObject(forKey: KbdSuite.errorKey)
         suite.removeObject(forKey: KbdSuite.transcriptKey)
         suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
+        CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
         suite.synchronize()
         viewState = .recording
 
         let now = Date().timeIntervalSince1970
-        let warmExpiry = suite.double(forKey: KbdSuite.warmSessionExpiryKey)
         let warmActive = suite.bool(forKey: KbdSuite.warmSessionActiveKey)
-        let hasWarmExpiry = warmExpiry > 0 && now < warmExpiry
-        let isHostWarm = warmActive && hasWarmExpiry
-        NSLog("[Keyboard] startHandoff isHostWarm=\(isHostWarm) active=\(warmActive) expiry=\(warmExpiry)")
+        let warmExpiry = suite.double(forKey: KbdSuite.warmSessionExpiryKey)
+        let isHostWarm = warmActive && warmExpiry > now
+
+        NSLog("[Keyboard] startHandoff warm=\(isHostWarm) expiry=\(warmExpiry)")
 
         if isHostWarm {
+            // Wake host via Darwin (does not open app). Listen poll picks up phase=start.
             postDarwinNotification(kbdDarwinStartName)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                guard let self, let suite = self.suite else { return }
-                suite.synchronize()
-                let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-                guard phase == KbdSuite.phaseStart else { return }
-                self.postDarwinNotification(kbdDarwinStartName)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                guard let self, let suite = self.suite else { return }
-                suite.synchronize()
-                let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-                guard phase == KbdSuite.phaseStart else { return }
-                self.postDarwinNotification(kbdDarwinStartName)
-            }
-        } else {
-            NSLog("[Keyboard] Opening containing app to start keyboard dictation")
-            guard let url = URL(string: "codictateapp://keyboard-record") else { return }
-            openApp(url)
-            startFallback(for: suite)
+            return
         }
+
+        NSLog("[Keyboard] Cold start — opening Codictate once")
+        guard let url = URL(string: "codictateapp://keyboard-record") else { return }
+        openApp(url)
+        startFallback(for: suite)
     }
 
     private func requestStop() {
         guard let suite else { return }
         stopStartFallback()
         let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
-        // Allow stop from start (race: tapped before host began recording) or recording.
         guard phase == KbdSuite.phaseRecording || phase == KbdSuite.phaseStart else {
             viewState = .error("Not recording yet.")
             return
         }
         suite.set(KbdSuite.phaseStopRequested, forKey: KbdSuite.phaseKey)
+        CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
         suite.synchronize()
-        postDarwinNotification(kbdDarwinStopName)
         viewState = .processing
         startResultPolling()
     }
@@ -347,12 +325,24 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             }
 
         case .processing:
-            if phase == KbdSuite.phaseIdle {
+            switch phase {
+            case KbdSuite.phaseReady:
                 stopResultPolling()
-                viewState = .idle
-            } else if phase == KbdSuite.phaseFailed {
+                if let text = suite.string(forKey: KbdSuite.transcriptKey), !text.isEmpty {
+                    textDocumentProxy.insertText(text)
+                    viewState = .result(text)
+                    suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
+                    suite.removeObject(forKey: KbdSuite.transcriptKey)
+                    suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
+                    suite.synchronize()
+                } else {
+                    viewState = .error("Empty transcript.")
+                }
+            case KbdSuite.phaseFailed:
                 stopResultPolling()
                 viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
+            default:
+                break
             }
         }
     }
@@ -360,9 +350,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     // MARK: Result polling
 
     private func startResultPolling() {
-        stopResultPolling()
-        resultPollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-            self?.checkResult()
+        guard resultPollTimer == nil else { return }
+        resultPollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.checkPhase()
         }
         RunLoop.main.add(resultPollTimer!, forMode: .common)
     }
@@ -370,36 +360,5 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private func stopResultPolling() {
         resultPollTimer?.invalidate()
         resultPollTimer = nil
-    }
-
-    private func checkResult() {
-        guard let suite else { return }
-        suite.synchronize()
-        let phase = suite.string(forKey: KbdSuite.phaseKey) ?? ""
-
-        if phase == KbdSuite.phaseFailed {
-            stopResultPolling()
-            stopStartFallback()
-            viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
-            return
-        }
-
-        guard phase == KbdSuite.phaseReady,
-              isKeyboardConsumableSession(suite),
-              let text = suite.string(forKey: KbdSuite.transcriptKey), !text.isEmpty
-        else { return }
-
-        stopResultPolling()
-        stopStartFallback()
-        textDocumentProxy.insertText(text.hasSuffix(" ") ? text : text + " ")
-
-        suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
-        suite.removeObject(forKey: KbdSuite.transcriptKey)
-        suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
-        suite.removeObject(forKey: KbdSuite.wavFileKey)
-        suite.removeObject(forKey: KbdSuite.errorKey)
-        suite.synchronize()
-
-        viewState = .result(text)
     }
 }

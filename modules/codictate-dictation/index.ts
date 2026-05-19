@@ -54,6 +54,10 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   listModels(): Promise<ModelInfo[]>;
   getPreferredModel(): Promise<ModelVariant>;
   setPreferredModel(variant: ModelVariant): Promise<void>;
+  getKeyboardWarmDuration(): Promise<number>;
+  setKeyboardWarmDuration(seconds: number): Promise<void>;
+  isKeyboardWarmSessionActive(): Promise<boolean>;
+  endKeyboardWarmSession(): Promise<void>;
 }
 
 const Native =
@@ -137,4 +141,20 @@ export async function getPreferredModel(): Promise<ModelVariant> {
 
 export async function setPreferredModel(variant: ModelVariant): Promise<void> {
   return Native.setPreferredModel(variant);
+}
+
+export async function getKeyboardWarmDuration(): Promise<number> {
+  return Native.getKeyboardWarmDuration();
+}
+
+export async function setKeyboardWarmDuration(seconds: number): Promise<void> {
+  return Native.setKeyboardWarmDuration(seconds);
+}
+
+export async function isKeyboardWarmSessionActive(): Promise<boolean> {
+  return Native.isKeyboardWarmSessionActive();
+}
+
+export async function endKeyboardWarmSession(): Promise<void> {
+  return Native.endKeyboardWarmSession();
 }
