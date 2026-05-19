@@ -145,9 +145,18 @@ private struct DictationBannerView: View {
                         .foregroundColor(.white.opacity(0.7))
                         .monospacedDigit()
                 } else if state.phase == "processing" {
-                    Text("Transcribing...")
+                    Text("Preparing speech model...")
                         .font(.headline)
                         .foregroundColor(.white)
+                    if let message = state.statusMessage, !message.isEmpty {
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+                    } else {
+                        Text("Transcribing...")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+                    }
                 } else if state.phase == "ready" {
                     Text("Done")
                         .font(.headline)

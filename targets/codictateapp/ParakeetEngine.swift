@@ -24,7 +24,8 @@ final class ParakeetModelManager {
     private static let readyKey = "parakeetModelReady"
 
     private(set) var loadedModels: AsrModels?
-    private var isDownloading = false
+    private var downloadTask: Task<Void, Error>?
+    private let downloadLock = NSLock()
 
     var modelDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -45,10 +46,28 @@ final class ParakeetModelManager {
     /// is a no-op when the cache is warm.
     func downloadAndPrepare() async throws {
         if loadedModels != nil { return }
-        guard !isDownloading else { return }
-        isDownloading = true
-        defer { isDownloading = false }
 
+        downloadLock.lock()
+        if downloadTask == nil {
+            downloadTask = Task { [weak self] in
+                guard let self else { return }
+                try await self.performDownload()
+            }
+        }
+        let task = downloadTask!
+        downloadLock.unlock()
+
+        do {
+            try await task.value
+        } catch {
+            downloadLock.lock()
+            downloadTask = nil
+            downloadLock.unlock()
+            throw error
+        }
+    }
+
+    private func performDownload() async throws {
         NotificationCenter.default.post(
             name: ParakeetModelNotification.progress,
             object: nil,
@@ -56,7 +75,7 @@ final class ParakeetModelManager {
         )
 
         let models = try await AsrModels.downloadAndLoad(version: .v3)
-        self.loadedModels = models
+        loadedModels = models
 
         let suite = UserDefaults(suiteName: "group.app.codictate")
         suite?.set(true, forKey: Self.readyKey)

@@ -6,5 +6,6 @@ struct DictationActivityAttributes: ActivityAttributes {
         var phase: String
         var startDate: Date
         var processingStartDate: Date? = nil
+        var statusMessage: String? = nil
     }
 }

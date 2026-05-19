@@ -289,15 +289,7 @@ final class KeyboardListenSession {
             return
         }
 
-        suite.set(KeyboardDictationBridge.phaseProcessing, forKey: KeyboardDictationBridge.phaseKey)
-        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-        suite.synchronize()
-        KeyboardHostRecorder.reloadControlWidget()
-
-        if #available(iOS 16.2, *) {
-            DictationLiveActivityManager.shared.updateToProcessing()
-        }
-        KeyboardHostRecorder.shared.notifyPhase(KeyboardDictationBridge.phaseProcessing)
+        KeyboardHostRecorder.shared.enterProcessingPhase(suite: suite)
 
         KeyboardHostRecorder.shared.transcribeWav(atPath: url.path, suite: suite)
         ensureWarmListenContinues(suite: suite)

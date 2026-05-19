@@ -12,7 +12,7 @@ private enum KbdSuite {
     static let keyboardVisibleKey = "kbdKeyboardVisible"
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
     static let warmSessionActiveKey = "kbdWarmSessionActive"
-    static let listenSessionReadyKey = "kbdListenSessionReady"
+    static let processingMessageKey = "kbdProcessingMessage"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -26,6 +26,7 @@ private enum KbdSuite {
 }
 
 private let kbdDarwinStartName = "app.codictate.dictation.keyboard.start"
+private let intentDarwinStopName = "app.codictate.dictation.intent.stop"
 
 final class KeyboardViewController: UIInputViewController, DictationKeyboardViewDelegate {
 
@@ -83,22 +84,22 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             viewState = .recording
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            if canInsertResult {
-                viewState = .processing
+            if canInsertResult, let suite {
+                viewState = processingViewState(from: suite)
                 startResultPolling()
             }
         case KbdSuite.phaseReady:
-            if canInsertResult {
-                let ts = suite?.double(forKey: KbdSuite.transcriptTimestampKey) ?? 0
+            if canInsertResult, let suite {
+                let ts = suite.double(forKey: KbdSuite.transcriptTimestampKey)
                 let age = Date().timeIntervalSince1970 - ts
                 if age < 10 {
-                    viewState = .processing
+                    viewState = processingViewState(from: suite)
                     startResultPolling()
                 } else {
-                    suite?.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
-                    suite?.removeObject(forKey: KbdSuite.transcriptKey)
-                    suite?.removeObject(forKey: KbdSuite.transcriptTimestampKey)
-                    suite?.synchronize()
+                    suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
+                    suite.removeObject(forKey: KbdSuite.transcriptKey)
+                    suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
+                    suite.synchronize()
                 }
             }
         default:
@@ -125,7 +126,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         case KbdSuite.phaseStart, KbdSuite.phaseRecording:
             requestStop()
         case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
-            viewState = .processing
+            guard let suite else { return }
+            viewState = processingViewState(from: suite)
             startResultPolling()
         default:
             startHandoff()
@@ -211,7 +213,11 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         suite.set(KbdSuite.phaseStopRequested, forKey: KbdSuite.phaseKey)
         CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
         suite.synchronize()
-        viewState = .processing
+        let source = suite.string(forKey: KbdSuite.sourceKey) ?? ""
+        if source == KbdSuite.sourceIntent {
+            postDarwinNotification(intentDarwinStopName)
+        }
+        viewState = processingViewState(from: suite)
         startResultPolling()
     }
 
@@ -242,6 +248,10 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private func isKeyboardConsumableSession(_ suite: UserDefaults) -> Bool {
         let source = suite.string(forKey: KbdSuite.sourceKey) ?? ""
         return source == KbdSuite.sourceKeyboard || source == KbdSuite.sourceIntent
+    }
+
+    private func processingViewState(from suite: UserDefaults) -> DictationViewState {
+        .processing(message: suite.string(forKey: KbdSuite.processingMessageKey))
     }
 
     // MARK: Phase polling
@@ -294,12 +304,12 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 viewState = .recording
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
                 if isKeyboardConsumableSession(suite) {
-                    viewState = .processing
+                    viewState = processingViewState(from: suite)
                     startResultPolling()
                 }
             case KbdSuite.phaseReady:
                 if isKeyboardConsumableSession(suite) {
-                    viewState = .processing
+                    viewState = processingViewState(from: suite)
                     startResultPolling()
                 }
             default:
@@ -312,7 +322,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 stopStartFallback()
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing, KbdSuite.phaseReady:
                 stopStartFallback()
-                viewState = .processing
+                viewState = processingViewState(from: suite)
                 startResultPolling()
             case KbdSuite.phaseFailed:
                 stopStartFallback()
@@ -326,6 +336,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
         case .processing:
             switch phase {
+            case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
+                viewState = processingViewState(from: suite)
             case KbdSuite.phaseReady:
                 stopResultPolling()
                 if let text = suite.string(forKey: KbdSuite.transcriptKey), !text.isEmpty {

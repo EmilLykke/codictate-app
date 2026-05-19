@@ -5,7 +5,7 @@ import UIKit
 enum DictationViewState: Equatable {
     case idle
     case recording
-    case processing
+    case processing(message: String?)
     case result(String)
     case error(String)
 }
@@ -251,12 +251,12 @@ final class DictationKeyboardView: UIView {
             dictateButton.alpha = 1
             setDictateActive(true)
             statusLabel.text = "Recording"
-        case .processing:
+        case .processing(let message):
             dictateButton.isEnabled = false
             dictateButton.alpha = 0.65
             setDictateActive(false)
             dictateButton.setIcon("waveform", size: 16)
-            statusLabel.text = "Transcribing"
+            statusLabel.text = message ?? "Transcribing..."
         }
     }
 
