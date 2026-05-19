@@ -179,6 +179,11 @@ public final class CodictateDictationModule: Module {
                 let suite = UserDefaults(suiteName: Self.appGroupID)
                 suite?.removeObject(forKey: "parakeetModelReady")
                 suite?.synchronize()
+                AppGroupModelManager.shared.resetParakeetDownloadState()
+                NotificationCenter.default.post(
+                    name: Notification.Name("codictate.parakeet.reset"),
+                    object: nil
+                )
                 return
             }
             guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }

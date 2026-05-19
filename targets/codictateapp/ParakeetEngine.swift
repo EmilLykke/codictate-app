@@ -9,6 +9,7 @@ enum ParakeetModelNotification {
     static let progress = Notification.Name("codictate.parakeet.progress")
     static let ready = Notification.Name("codictate.parakeet.ready")
     static let failed = Notification.Name("codictate.parakeet.failed")
+    static let reset = Notification.Name("codictate.parakeet.reset")
 }
 
 /// Manages the Parakeet TDT v3 CoreML model lifecycle.
@@ -41,11 +42,23 @@ final class ParakeetModelManager {
         return suite?.bool(forKey: Self.readyKey) == true
     }
 
+    /// Clears in-memory cache after Settings delete so re-download runs fully.
+    func resetAfterDelete() {
+        downloadLock.lock()
+        downloadTask?.cancel()
+        downloadTask = nil
+        loadedModels = nil
+        downloadLock.unlock()
+    }
+
     /// Downloads (if needed) and loads the Parakeet TDT v3 CoreML models.
     /// FluidAudio manages the on-disk cache internally; `downloadAndLoad`
     /// is a no-op when the cache is warm.
     func downloadAndPrepare() async throws {
-        if loadedModels != nil { return }
+        if loadedModels != nil {
+            syncReadyFlag()
+            return
+        }
 
         downloadLock.lock()
         if downloadTask == nil {
@@ -88,6 +101,12 @@ final class ParakeetModelManager {
         )
     }
 
+    private func syncReadyFlag() {
+        let suite = UserDefaults(suiteName: "group.app.codictate")
+        suite?.set(true, forKey: Self.readyKey)
+        suite?.synchronize()
+    }
+
     /// Installs a NotificationCenter observer for the Expo module's download request.
     /// Called once from `KeyboardHostRecorder.bootstrap()`.
     func installObserver() {
@@ -112,6 +131,14 @@ final class ParakeetModelManager {
                     )
                 }
             }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: ParakeetModelNotification.reset,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.resetAfterDelete()
         }
     }
 }

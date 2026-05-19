@@ -49,6 +49,17 @@ final class AppGroupModelManager {
 
     private let groupID = "group.app.codictate"
 
+    private typealias ParakeetWaiter = (
+        onProgress: (Double) -> Void,
+        onComplete: (Result<String, Error>) -> Void
+    )
+
+    private var parakeetWaiters: [ParakeetWaiter] = []
+    private var parakeetDownloadInFlight = false
+    private var parakeetProgressObserver: NSObjectProtocol?
+    private var parakeetReadyObserver: NSObjectProtocol?
+    private var parakeetFailedObserver: NSObjectProtocol?
+
     private init() {}
 
     var containerURL: URL? {
@@ -70,6 +81,11 @@ final class AppGroupModelManager {
     func parakeetModelIsReady() -> Bool {
         guard let suite = UserDefaults(suiteName: groupID) else { return false }
         return suite.bool(forKey: Self.parakeetReadyKey)
+    }
+
+    func resetParakeetDownloadState() {
+        parakeetDownloadInFlight = false
+        parakeetWaiters = []
     }
 
     func modelFilePath(for variant: Variant) -> String? {
@@ -104,44 +120,12 @@ final class AppGroupModelManager {
                 return
             }
 
-            var progressObserver: NSObjectProtocol?
-            var readyObserver: NSObjectProtocol?
-            var failedObserver: NSObjectProtocol?
+            parakeetWaiters.append((onProgress, onComplete))
+            installParakeetObserversIfNeeded()
 
-            let cleanup = {
-                if let o = progressObserver { NotificationCenter.default.removeObserver(o) }
-                if let o = readyObserver { NotificationCenter.default.removeObserver(o) }
-                if let o = failedObserver { NotificationCenter.default.removeObserver(o) }
-            }
-
-            progressObserver = NotificationCenter.default.addObserver(
-                forName: Notification.Name("codictate.parakeet.progress"),
-                object: nil, queue: .main
-            ) { note in
-                let p = (note.userInfo?["progress"] as? Double) ?? 0
-                onProgress(p)
-            }
-
-            readyObserver = NotificationCenter.default.addObserver(
-                forName: Notification.Name("codictate.parakeet.ready"),
-                object: nil, queue: .main
-            ) { [weak self] _ in
-                cleanup()
-                let path = self?.parakeetModelDirectory?.path ?? ""
-                onComplete(.success(path))
-            }
-
-            failedObserver = NotificationCenter.default.addObserver(
-                forName: Notification.Name("codictate.parakeet.failed"),
-                object: nil, queue: .main
-            ) { note in
-                cleanup()
-                let msg = (note.userInfo?["error"] as? String) ?? "Parakeet model download failed."
-                onComplete(.failure(NSError(
-                    domain: "AppGroupModelManager", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: msg]
-                )))
-            }
+            guard !parakeetDownloadInFlight else { return }
+            parakeetDownloadInFlight = true
+            onProgress(0)
 
             NotificationCenter.default.post(
                 name: Notification.Name("codictate.parakeet.ensureModel"),
@@ -201,6 +185,56 @@ final class AppGroupModelManager {
     }
 
     private static var delegateKey: UInt8 = 0
+
+    private func installParakeetObserversIfNeeded() {
+        guard parakeetProgressObserver == nil else { return }
+
+        parakeetProgressObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("codictate.parakeet.progress"),
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let p = (note.userInfo?["progress"] as? Double) ?? 0
+            for waiter in self.parakeetWaiters {
+                waiter.onProgress(p)
+            }
+        }
+
+        parakeetReadyObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("codictate.parakeet.ready"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let path = self.parakeetModelDirectory?.path ?? ""
+            self.finishParakeetDownload(.success(path))
+        }
+
+        parakeetFailedObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("codictate.parakeet.failed"),
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let msg = (note.userInfo?["error"] as? String) ?? "Parakeet model download failed."
+            self.finishParakeetDownload(.failure(NSError(
+                domain: "AppGroupModelManager", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: msg]
+            )))
+        }
+    }
+
+    private func finishParakeetDownload(_ result: Result<String, Error>) {
+        parakeetDownloadInFlight = false
+        let waiters = parakeetWaiters
+        parakeetWaiters = []
+        for waiter in waiters {
+            switch result {
+            case .success(let path):
+                waiter.onComplete(.success(path))
+            case .failure(let error):
+                waiter.onComplete(.failure(error))
+            }
+        }
+    }
 
     private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         let onProgress: (Double) -> Void

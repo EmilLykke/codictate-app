@@ -29,7 +29,10 @@ private final class KeyboardKey: UIControl {
 
     private let backgroundLayer = UIView()
     private let recordingLayer = UIView()
+    private let transcribingLayer = UIView()
     private let style: KeyStyle
+
+    private static let brandOrange = UIColor(red: 1, green: 140 / 255, blue: 60 / 255, alpha: 1)
     private var isSelectedKey = false
 
     enum KeyStyle {
@@ -58,6 +61,15 @@ private final class KeyboardKey: UIControl {
         recordingLayer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(recordingLayer)
 
+        transcribingLayer.isUserInteractionEnabled = false
+        transcribingLayer.backgroundColor = Self.brandOrange
+        transcribingLayer.layer.cornerRadius = 6
+        transcribingLayer.layer.cornerCurve = .continuous
+        transcribingLayer.clipsToBounds = true
+        transcribingLayer.alpha = 0
+        transcribingLayer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(transcribingLayer)
+
         contentLabel.textColor = .label
         contentLabel.textAlignment = .center
         contentLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -77,6 +89,10 @@ private final class KeyboardKey: UIControl {
             recordingLayer.trailingAnchor.constraint(equalTo: trailingAnchor),
             recordingLayer.topAnchor.constraint(equalTo: topAnchor),
             recordingLayer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            transcribingLayer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            transcribingLayer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            transcribingLayer.topAnchor.constraint(equalTo: topAnchor),
+            transcribingLayer.bottomAnchor.constraint(equalTo: bottomAnchor),
             contentLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             contentLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             contentIcon.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -101,6 +117,12 @@ private final class KeyboardKey: UIControl {
     func setRecordingHighlight(_ on: Bool) {
         UIView.animate(withDuration: 0.18, delay: 0, options: .beginFromCurrentState) {
             self.recordingLayer.alpha = on ? 1 : 0
+        }
+    }
+
+    func setTranscribingHighlight(_ on: Bool) {
+        UIView.animate(withDuration: 0.18, delay: 0, options: .beginFromCurrentState) {
+            self.transcribingLayer.alpha = on ? 1 : 0
         }
     }
 
@@ -238,23 +260,27 @@ final class DictationKeyboardView: UIView {
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(false)
+            setDictateTranscribing(false)
             statusLabel.text = ""
             statusLabel.textColor = .secondaryLabel
         case .error(let message):
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(false)
+            setDictateTranscribing(false)
             statusLabel.text = message
             statusLabel.textColor = .systemRed
         case .recording:
             dictateButton.isEnabled = true
             dictateButton.alpha = 1
             setDictateActive(true)
+            setDictateTranscribing(false)
             statusLabel.text = "Recording"
         case .processing(let message):
             dictateButton.isEnabled = false
-            dictateButton.alpha = 0.65
+            dictateButton.alpha = 1
             setDictateActive(false)
+            setDictateTranscribing(true)
             dictateButton.setIcon("waveform", size: 16)
             statusLabel.text = message ?? "Transcribing..."
         }
@@ -436,6 +462,15 @@ final class DictationKeyboardView: UIView {
         dictateButton.setIcon(on ? "stop.fill" : "mic.fill", size: 18)
         dictateButton.contentIcon.tintColor = on ? .white : .label
         dictateButton.setRecordingHighlight(on)
+    }
+
+    private func setDictateTranscribing(_ on: Bool) {
+        if on {
+            dictateButton.contentIcon.tintColor = .white
+        } else if !dictateButton.contentIcon.isHidden {
+            dictateButton.contentIcon.tintColor = .label
+        }
+        dictateButton.setTranscribingHighlight(on)
     }
 
     // MARK: Letter title refresh

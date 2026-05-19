@@ -13,6 +13,7 @@ import type {
   TextInputSelectionChangeEventData,
 } from 'react-native'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
+import { TRANSCRIPT_AREA_HEIGHT } from '@/constants/dictation-layout'
 
 const INPUT_ACCESSORY_ID = 'dictation-composer'
 
@@ -49,6 +50,7 @@ export function CardDictationComposer(props: CardDictationComposerProps) {
       <View style={styles.card}>
         <TextInput
           multiline
+          scrollEnabled
           value={value}
           selection={selection}
           onChangeText={onChangeText}
@@ -134,8 +136,7 @@ export type { TextSelection }
 
 const styles = StyleSheet.create({
   card: {
-    flex: 1,
-    minHeight: 0,
+    height: TRANSCRIPT_AREA_HEIGHT,
     width: '100%',
     maxWidth: 368,
     alignSelf: 'center',
@@ -150,7 +151,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    minHeight: 220,
+    minHeight: 0,
     color: appColors.foreground,
     fontFamily: appFontFamily.sans,
     fontSize: appFontSize.body - 2,

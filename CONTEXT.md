@@ -22,6 +22,10 @@ Warm-window validity is determined by `kbdWarmSessionActive` + `kbdWarmSessionEx
 
 Passive Dynamic Island / lock-screen state after keyboard dictation completes. Shows the keyboard warm session is armed. No `widgetURL` (tap does not open the app). Swiping it away ends the warm session.
 
+## Keyboard dictate button (visual states)
+
+On the Codictate keyboard extension, the Dictate key uses color to show phase: **red** while recording (stop icon), **orange** while transcribing/processing (waveform icon). Idle uses a light red-tinted key background. Distinct from the host app's orange mic indicator during a keyboard warm session.
+
 ## First-time Parakeet processing
 
 Parakeet models load lazily via FluidAudio `AsrModels.downloadAndLoad` on the first transcribe of a install. While `parakeetModelReady` is false, keyboard strip and Live Activity show extended copy ("first use may take a minute"). After the first successful transcribe, processing UI returns to generic "Transcribing...".

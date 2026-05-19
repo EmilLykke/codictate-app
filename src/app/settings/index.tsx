@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router'
 import { ButtonHeaderBack } from '@/components/Settings/ButtonHeaderBack'
-import { ScreenSettings } from '@/components/Settings/ScreenSettings'
+import { ScreenSettingsHub } from '@/components/Settings/ScreenSettingsHub'
 
 export default function SettingsIndexRoute() {
   return (
@@ -11,7 +11,7 @@ export default function SettingsIndexRoute() {
           headerLeft: () => <ButtonHeaderBack />,
         }}
       />
-      <ScreenSettings />
+      <ScreenSettingsHub />
     </>
   )
 }
