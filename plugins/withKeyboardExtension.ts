@@ -991,22 +991,34 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           }
         }
 
-        // Skip ALL Expo/RN init when cold-launched in background for AudioRecordingIntent.
-        // Guard both willFinish and didFinish. The crash may happen in either super chain.
+        // Deferred React Native init: skip RN setup when cold-launched in background
+        // for AudioRecordingIntent, then initialize on first foreground activation.
         if (!ad.includes("applicationState == .background")) {
-          // 1. Guard didFinishLaunchingWithOptions: skip RN bridge, window, and super call.
+          // 1. Add didInitReactNative flag after existing properties.
+          ad = ad.replace(
+            "  var reactNativeFactory: RCTReactNativeFactory?\n",
+            "  var reactNativeFactory: RCTReactNativeFactory?\n  private var didInitReactNative = false\n",
+          );
+
+          // 2. Guard didFinishLaunchingWithOptions: skip RN init, call helper instead.
           ad = ad.replace(
             "  ) -> Bool {\n    let delegate = ReactNativeDelegate()",
-            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch - skipping React Native init")\n      return true\n    }\n    let delegate = ReactNativeDelegate()',
+            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch - deferring React Native init")\n      return true\n    }\n    initReactNativeIfNeeded(application: application, launchOptions: launchOptions)\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }',
           );
-          // Remove old bootstrap placement (before return super) to avoid duplicate
+
+          // Remove the original inline RN init block + return super (now in helper + above).
+          ad = ad.replace(
+            '    let factory = ExpoReactNativeFactory(delegate: delegate)\n    delegate.dependencyProvider = RCTAppDependencyProvider()\n\n    reactNativeDelegate = delegate\n    reactNativeFactory = factory\n\n#if os(iOS) || os(tvOS)\n    window = UIWindow(frame: UIScreen.main.bounds)\n    factory.startReactNative(\n      withModuleName: "main",\n      in: window,\n      launchOptions: launchOptions)\n#endif\n\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }',
+            "",
+          );
+
+          // Remove old bootstrap placement to avoid duplicate
           ad = ad.replace(
             "\n    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(",
             "\n    return super.application(",
           );
 
-          // 2. Inject willFinishLaunchingWithOptions override before the class closing brace.
-          //    This fires BEFORE didFinish. It catches crashes in the super chain even earlier.
+          // 3. Inject willFinishLaunchingWithOptions override.
           if (!ad.includes("willFinishLaunchingWithOptions")) {
             const willFinishMethod = [
               "",
@@ -1027,8 +1039,66 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
             }
           }
 
+          // 4. Inject applicationDidBecomeActive override for deferred init.
+          if (!ad.includes("applicationDidBecomeActive")) {
+            const didBecomeActiveMethod = [
+              "",
+              "  override func applicationDidBecomeActive(_ application: UIApplication) {",
+              "    if !didInitReactNative {",
+              '      NSLog("[AppDelegate] Deferred React Native init on foreground activation")',
+              "      _ = super.application(application, willFinishLaunchingWithOptions: nil)",
+              "      initReactNativeIfNeeded(application: application, launchOptions: nil)",
+              "      _ = super.application(application, didFinishLaunchingWithOptions: nil)",
+              "    }",
+              "    super.applicationDidBecomeActive(application)",
+              "  }",
+              "",
+            ].join("\n");
+            const classEnd2 = ad.indexOf("\n}\n");
+            if (classEnd2 !== -1) {
+              ad =
+                ad.slice(0, classEnd2) +
+                didBecomeActiveMethod +
+                ad.slice(classEnd2);
+            }
+          }
+
+          // 5. Inject initReactNativeIfNeeded helper method.
+          if (!ad.includes("func initReactNativeIfNeeded")) {
+            const helperMethod = [
+              "",
+              "  private func initReactNativeIfNeeded(",
+              "    application: UIApplication,",
+              "    launchOptions: [UIApplication.LaunchOptionsKey: Any]?",
+              "  ) {",
+              "    guard !didInitReactNative else { return }",
+              "    didInitReactNative = true",
+              "",
+              "    let delegate = ReactNativeDelegate()",
+              "    let factory = ExpoReactNativeFactory(delegate: delegate)",
+              "    delegate.dependencyProvider = RCTAppDependencyProvider()",
+              "",
+              "    reactNativeDelegate = delegate",
+              "    reactNativeFactory = factory",
+              "",
+              "    #if os(iOS) || os(tvOS)",
+              "    window = UIWindow(frame: UIScreen.main.bounds)",
+              "    factory.startReactNative(",
+              '      withModuleName: "main",',
+              "      in: window,",
+              "      launchOptions: launchOptions)",
+              "    #endif",
+              "  }",
+              "",
+            ].join("\n");
+            const classEnd3 = ad.indexOf("\n}\n");
+            if (classEnd3 !== -1) {
+              ad = ad.slice(0, classEnd3) + helperMethod + ad.slice(classEnd3);
+            }
+          }
+
           console.log(
-            "[withKeyboardExtension] Added background launch guards (willFinish + didFinish) in AppDelegate",
+            "[withKeyboardExtension] Added background launch guards with deferred RN init in AppDelegate",
           );
         } else if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
           ad = ad.replace(

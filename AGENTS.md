@@ -6,6 +6,12 @@ Expo + React Native iOS app. On-device speech-to-text with two ASR engines: Para
 
 Never run prebuild just to edit Swift files; build directly in Xcode or `expo run:ios`. Prebuild is only needed when `app.json`, config plugins, or native module setup changes. `--clean` nukes the whole `ios/` folder; only use it when things are truly broken.
 
+**Never edit files inside `ios/` directly.** Prebuild regenerates the entire `ios/` folder, wiping any direct edits. Always edit the source of truth:
+- Swift source files → `targets/codictateapp/` (copied into `ios/` by `withKeyboardExtension` plugin)
+- AppDelegate modifications → `plugins/withKeyboardExtension.ts` (injected via string replacement during prebuild)
+- Widget files → `targets/widgets/`
+- Expo module native code → `modules/codictate-dictation/ios/`
+
 ```bash
 bun run prebuild:ios   # regenerate ios/ from app.config.ts (no clean)
 bun run ios            # expo run:ios

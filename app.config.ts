@@ -8,11 +8,11 @@ const config: ExpoConfig = {
   slug: "codictate",
   version: "1.0.0",
   orientation: "portrait",
-  icon: "./assets/images/icon.png",
+  icon: "./assets/icon.iconset/icon_512x512@2x.png",
   scheme: "codictateapp",
   userInterfaceStyle: "dark",
   ios: {
-    icon: "./assets/codictate.icon",
+    icon: "./assets/icon.iconset/icon_512x512@2x.png",
     bundleIdentifier: "app.codictate",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,

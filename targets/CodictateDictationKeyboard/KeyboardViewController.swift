@@ -41,11 +41,23 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         didSet {
             keyboardView.apply(state: viewState)
             switch viewState {
-            case .result, .error:
+            case .result:
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                     guard let self else { return }
                     switch self.viewState {
-                    case .result, .error: self.viewState = .idle
+                    case .result:
+                        self.resetSuiteToIdle()
+                        self.viewState = .idle
+                    default: break
+                    }
+                }
+            case .error:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    guard let self else { return }
+                    switch self.viewState {
+                    case .error:
+                        self.resetSuiteToIdle()
+                        self.viewState = .idle
                     default: break
                     }
                 }
@@ -254,6 +266,43 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         .processing(message: suite.string(forKey: KbdSuite.processingMessageKey))
     }
 
+    /// Benign outcomes where the keyboard should recover immediately (main app may still show a notice).
+    private func isBenignNoSpeechOutcome(_ message: String?) -> Bool {
+        guard let message else { return true }
+        let lower = message.lowercased()
+        return lower.contains("no speech")
+            || lower.contains("empty transcript")
+            || lower.contains("no transcript")
+    }
+
+    private func resetSuiteToIdle() {
+        guard let suite else { return }
+        suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
+        suite.removeObject(forKey: KbdSuite.errorKey)
+        suite.removeObject(forKey: KbdSuite.transcriptKey)
+        suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
+        suite.removeObject(forKey: KbdSuite.processingMessageKey)
+        CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
+        suite.synchronize()
+    }
+
+    private func recoverFromBenignFailure() {
+        stopResultPolling()
+        stopStartFallback()
+        resetSuiteToIdle()
+        viewState = .idle
+    }
+
+    private func showFailure(_ message: String) {
+        stopResultPolling()
+        stopStartFallback()
+        if isBenignNoSpeechOutcome(message) {
+            recoverFromBenignFailure()
+            return
+        }
+        viewState = .error(message)
+    }
+
     // MARK: Phase polling
 
     private func startPhasePolling() {
@@ -299,6 +348,11 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
         switch viewState {
         case .idle, .result, .error:
+            if phase == KbdSuite.phaseFailed,
+               isBenignNoSpeechOutcome(suite.string(forKey: KbdSuite.errorKey)) {
+                recoverFromBenignFailure()
+                break
+            }
             switch phase {
             case KbdSuite.phaseStart, KbdSuite.phaseRecording:
                 viewState = .recording
@@ -326,7 +380,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 startResultPolling()
             case KbdSuite.phaseFailed:
                 stopStartFallback()
-                viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
+                showFailure(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
             case KbdSuite.phaseIdle:
                 stopStartFallback()
                 viewState = .idle
@@ -336,6 +390,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
         case .processing:
             switch phase {
+            case KbdSuite.phaseIdle:
+                stopResultPolling()
+                viewState = .idle
             case KbdSuite.phaseStopRequested, KbdSuite.phaseProcessing:
                 viewState = processingViewState(from: suite)
             case KbdSuite.phaseReady:
@@ -348,11 +405,11 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                     suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)
                     suite.synchronize()
                 } else {
-                    viewState = .error("Empty transcript.")
+                    recoverFromBenignFailure()
                 }
             case KbdSuite.phaseFailed:
                 stopResultPolling()
-                viewState = .error(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
+                showFailure(suite.string(forKey: KbdSuite.errorKey) ?? "Dictation failed.")
             default:
                 break
             }
