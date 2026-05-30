@@ -8,17 +8,20 @@ import { useTranscriptionLanguage } from '@/hooks/settings/transcription-languag
 
 type Row = (typeof TRANSCRIPTION_LANGUAGE_OPTIONS)[number]
 
-export function ScreenLanguagePicker() {
-  const router = useRouter()
+export function LanguagePickerContent({
+  onDismiss,
+}: {
+  onDismiss: () => void
+}) {
   const { languageId, setLanguageId } = useTranscriptionLanguage()
 
   const onPick = useCallback(
     async (id: string) => {
       await setLanguageId(id)
       void Haptics.selectionAsync()
-      router.back()
+      onDismiss()
     },
-    [router, setLanguageId]
+    [onDismiss, setLanguageId]
   )
 
   const renderItem = useCallback(
@@ -64,6 +67,11 @@ export function ScreenLanguagePicker() {
       showsVerticalScrollIndicator={false}
     />
   )
+}
+
+export function ScreenLanguagePicker() {
+  const router = useRouter()
+  return <LanguagePickerContent onDismiss={() => router.back()} />
 }
 
 const styles = StyleSheet.create({

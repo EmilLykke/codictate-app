@@ -18,17 +18,26 @@ export const WARM_DURATION_OPTIONS = [
 
 export const MODEL_LABELS: Record<string, string> = {
   parakeet: 'Parakeet TDT v3',
-  base: 'Whisper Base (Q5_1)',
+  base: 'Base (Q5_1)',
+  base_en: 'Base.en (Q5_1)',
 }
 
 export const MODEL_META: Record<string, string> = {
-  parakeet: 'Neural Engine · ~500 MB',
-  base: 'CPU fallback · ~57 MB',
+  parakeet: '~500 MB',
+  base: 'Whisper · ~57 MB',
+  base_en: 'Whisper · ~57 MB',
 }
 
 export const MODEL_SIZE_MB: Record<string, string> = {
   parakeet: '500',
   base: '57',
+  base_en: '57',
+}
+
+export const MODEL_DESCRIPTIONS: Record<string, string> = {
+  base: 'Default model.',
+  base_en: 'Good for English only.',
+  parakeet: 'The fastest and best model.',
 }
 
 export const KEYBOARD_ENABLE_STEPS =

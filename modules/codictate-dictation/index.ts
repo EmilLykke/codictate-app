@@ -30,7 +30,7 @@ export type StateChangeEvent = {
 export type TranscriptEvent = { transcript: string };
 export type ErrorEvent = { message: string };
 
-export type ModelVariant = "parakeet" | "base";
+export type ModelVariant = "parakeet" | "base" | "base_en";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
@@ -113,19 +113,19 @@ export function onModelProgress(
 }
 
 export async function isModelReady(
-  variant: ModelVariant = "parakeet",
+  variant: ModelVariant = "base",
 ): Promise<boolean> {
   return Native.isModelReady(variant);
 }
 
 export async function ensureModel(
-  variant: ModelVariant = "parakeet",
+  variant: ModelVariant = "base",
 ): Promise<void> {
   return Native.ensureModel(variant);
 }
 
 export async function deleteModel(
-  variant: ModelVariant = "parakeet",
+  variant: ModelVariant = "base",
 ): Promise<void> {
   return Native.deleteModel(variant);
 }
@@ -134,9 +134,13 @@ export async function listModels(): Promise<ModelInfo[]> {
   return Native.listModels();
 }
 
+const KNOWN_VARIANTS: ModelVariant[] = ["parakeet", "base", "base_en"];
+
 export async function getPreferredModel(): Promise<ModelVariant> {
   const v = await Native.getPreferredModel();
-  return v === "base" ? "base" : "parakeet";
+  return KNOWN_VARIANTS.includes(v as ModelVariant)
+    ? (v as ModelVariant)
+    : "base";
 }
 
 export async function setPreferredModel(variant: ModelVariant): Promise<void> {

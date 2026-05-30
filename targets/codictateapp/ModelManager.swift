@@ -1,20 +1,17 @@
 import Foundation
 
-/// Downloads and locates ASR models.
-///
-/// Two variants:
-///   - `parakeet` - FluidAudio Parakeet TDT v3 CoreML (stored in Documents via ParakeetModelManager)
-///   - `base`     - Whisper base-q5_1 GGML (~57 MB, stored in App Group)
 final class ModelManager {
 
     enum Variant: String {
         case parakeet = "parakeet"
         case base = "base"
+        case baseEn = "base_en"
 
         var filename: String {
             switch self {
             case .parakeet: return ""
             case .base: return "ggml-base-q5_1.bin"
+            case .baseEn: return "ggml-base.en-q5_1.bin"
             }
         }
 
@@ -28,13 +25,24 @@ final class ModelManager {
                 return URL(string:
                     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
                 )!
+            case .baseEn:
+                return URL(string:
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
+                )!
             }
         }
 
         var minBytes: Int64 {
             switch self {
             case .parakeet: return 0
-            case .base: return 50 * 1024 * 1024
+            case .base, .baseEn: return 50 * 1024 * 1024
+            }
+        }
+
+        var isWhisper: Bool {
+            switch self {
+            case .parakeet: return false
+            case .base, .baseEn: return true
             }
         }
     }
@@ -61,7 +69,7 @@ final class ModelManager {
         switch variant {
         case .parakeet:
             return ParakeetModelManager.shared.modelDirectory.path
-        case .base:
+        case .base, .baseEn:
             return containerURL?.appendingPathComponent(variant.filename).path
         }
     }
@@ -70,7 +78,7 @@ final class ModelManager {
         switch variant {
         case .parakeet:
             return ParakeetModelManager.shared.isReady
-        case .base:
+        case .base, .baseEn:
             guard let path = containerURL?.appendingPathComponent(variant.filename).path else {
                 return false
             }

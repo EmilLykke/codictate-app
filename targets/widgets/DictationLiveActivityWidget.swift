@@ -59,10 +59,12 @@ struct DictationLiveActivityWidget: Widget {
                             Circle()
                                 .fill(Color.orange)
                                 .frame(width: 6, height: 6)
-                            Text(timerInterval: context.state.startDate...Date.distantFuture, countsDown: false)
-                                .font(.system(.title3, design: .monospaced).weight(.medium))
-                                .foregroundColor(.white)
-                                .monospacedDigit()
+                            TimelineView(.periodic(from: context.state.startDate, by: 1)) { tl in
+                                Text("\(Int(tl.date.timeIntervalSince(context.state.startDate)))s")
+                                    .font(.system(.title3, design: .monospaced).weight(.medium))
+                                    .foregroundColor(.white)
+                                    .monospacedDigit()
+                            }
                         } else if context.state.phase == "processing" {
                             TimelineView(.periodic(from: context.state.processingStartDate ?? Date(), by: 0.5)) { tl in
                                 ProgressRing(
@@ -95,11 +97,13 @@ struct DictationLiveActivityWidget: Widget {
                         Circle()
                             .fill(Color.orange)
                             .frame(width: 6, height: 6)
-                        Text(timerInterval: context.state.startDate...Date.distantFuture, countsDown: false)
-                            .font(.system(.caption, design: .monospaced).weight(.semibold))
-                            .foregroundColor(.white)
-                            .monospacedDigit()
-                            .frame(width: 32)
+                        TimelineView(.periodic(from: context.state.startDate, by: 1)) { tl in
+                            Text("\(Int(tl.date.timeIntervalSince(context.state.startDate)))s")
+                                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                                .frame(minWidth: 32)
+                        }
                     }
                 } else if context.state.phase == "processing" {
                     TimelineView(.periodic(from: context.state.processingStartDate ?? Date(), by: 0.5)) { tl in
@@ -140,10 +144,12 @@ private struct DictationBannerView: View {
                     Text("Recording")
                         .font(.headline)
                         .foregroundColor(.white)
-                    Text(timerInterval: state.startDate...Date.distantFuture, countsDown: false)
-                        .font(.system(.subheadline, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
-                        .monospacedDigit()
+                    TimelineView(.periodic(from: state.startDate, by: 1)) { tl in
+                        Text("\(Int(tl.date.timeIntervalSince(state.startDate)))s")
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
+                            .monospacedDigit()
+                    }
                 } else if state.phase == "processing" {
                     Text("Preparing speech model...")
                         .font(.headline)

@@ -1,4 +1,4 @@
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ensureModel,
@@ -18,7 +18,7 @@ export function useNativeModel(): NativeModelState {
   const [state, setState] = useState<NativeModelState>({ status: 'checking' })
 
   /** Tracks `onModelProgress` filtering and which variant triggered the current download UI. */
-  const activeVariantRef = useRef<ModelVariant>('parakeet')
+  const activeVariantRef = useRef<ModelVariant>('base')
 
   const run = useCallback(() => {
     void getPreferredModel().then((variant) => {

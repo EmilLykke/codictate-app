@@ -21,7 +21,15 @@ import {
 import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings'
 import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
+import { MODEL_SIZE_MB } from '@/components/Settings/settings-shared'
+import { IndeterminateProgressBar } from '@/components/IndeterminateProgressBar'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
+import { useWarmSession } from '@/hooks/whisper/use-warm-session'
+import { useSharedModelManagement } from '@/hooks/whisper/model-management-context'
+import { WarmSessionBanner } from '@/components/Dictation/WarmSessionBanner'
+import { ModelLanguageChips } from '@/components/Dictation/ModelLanguageChips'
+import { ModelSwitcherSheet } from '@/components/Dictation/ModelSwitcherSheet'
+import { LanguageSwitcherSheet } from '@/components/Dictation/LanguageSwitcherSheet'
 import { TRANSCRIPT_AREA_HEIGHT } from '@/constants/dictation-layout'
 import {
   type NativeModelState,
@@ -58,6 +66,8 @@ export default function Index() {
 
 function DictationScreen() {
   const insets = useSafeAreaInsets()
+  const warmSession = useWarmSession()
+  const modelMgmt = useSharedModelManagement()
   const { dictState, transcript, dictError, start, stop, clear } =
     useRealtimeDictation()
   const [draft, setDraft] = useState('')
@@ -65,6 +75,8 @@ function DictationScreen() {
     start: 0,
     end: 0,
   })
+  const [modelSheetVisible, setModelSheetVisible] = useState(false)
+  const [languageSheetVisible, setLanguageSheetVisible] = useState(false)
   const isRecording = dictState === 'recording'
   const isProcessing = dictState === 'processing'
 
@@ -108,48 +120,70 @@ function DictationScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={[
-        styles.dictationRoot,
-        { paddingBottom: Math.max(insets.bottom, 12) },
-      ]}
-      behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.transcriptSlot}>
-        <CardDictationComposer
-          value={draft}
-          selection={selection}
-          onChangeText={setDraft}
-          onSelectionChange={(event) =>
-            setSelection(event.nativeEvent.selection)
-          }
-          onCopyPress={() => void handleCopyDraft()}
-          onSharePress={() => void handleShareDraft()}
-          onClearPress={() => void handleClearDraft()}
+    <>
+      <KeyboardAvoidingView
+        style={[
+          styles.dictationRoot,
+          { paddingBottom: Math.max(insets.bottom, 12) },
+        ]}
+        behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
+      >
+        <ModelLanguageChips
+          modelVariant={modelMgmt.preferredVariant}
+          onModelPress={() => setModelSheetVisible(true)}
+          onLanguagePress={() => setLanguageSheetVisible(true)}
         />
-      </View>
 
-      <View style={styles.spacer} />
+        <View style={styles.transcriptSlot}>
+          <CardDictationComposer
+            value={draft}
+            selection={selection}
+            onChangeText={setDraft}
+            onSelectionChange={(event) =>
+              setSelection(event.nativeEvent.selection)
+            }
+            onCopyPress={() => void handleCopyDraft()}
+            onSharePress={() => void handleShareDraft()}
+            onClearPress={() => void handleClearDraft()}
+          />
+        </View>
 
-      {dictError ? (
-        <View style={styles.errorBadge}>
-          <Text style={styles.errorText} selectable>
-            {dictError}
+        <View style={styles.spacer} />
+
+        {warmSession.isActive ? (
+          <WarmSessionBanner onEnd={() => void warmSession.end()} />
+        ) : null}
+
+        {dictError ? (
+          <View style={styles.errorBadge}>
+            <Text style={styles.errorText} selectable>
+              {dictError}
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={styles.controlsColumn}>
+          <RecordButton dictState={dictState} onPress={handleButtonPress} />
+          <Text style={styles.hint}>
+            {isRecording
+              ? 'Tap to stop'
+              : isProcessing
+                ? 'Transcribing…'
+                : 'Tap to dictate'}
           </Text>
         </View>
-      ) : null}
+      </KeyboardAvoidingView>
 
-      <View style={styles.controlsColumn}>
-        <RecordButton dictState={dictState} onPress={handleButtonPress} />
-        <Text style={styles.hint}>
-          {isRecording
-            ? 'Tap to stop'
-            : isProcessing
-              ? 'Transcribing…'
-              : 'Tap to dictate'}
-        </Text>
-      </View>
-    </KeyboardAvoidingView>
+      <ModelSwitcherSheet
+        visible={modelSheetVisible}
+        onClose={() => setModelSheetVisible(false)}
+        management={modelMgmt}
+      />
+      <LanguageSwitcherSheet
+        visible={languageSheetVisible}
+        onClose={() => setLanguageSheetVisible(false)}
+      />
+    </>
   )
 }
 
@@ -160,7 +194,9 @@ function SetupScreen(props: { model: SetupModelInput }) {
   const isDownloading = model.status === 'downloading'
   const progress = isDownloading ? model.progress : 0
   const pct = Math.round(progress * 100)
-  const approxMb = isDownloading && model.variant === 'parakeet' ? 500 : 57
+  const variant = isDownloading ? model.variant : 'base'
+  const approxMb = MODEL_SIZE_MB[variant] ?? '57'
+  const isParakeet = variant === 'parakeet'
 
   return (
     <View style={styles.centeredFill}>
@@ -169,22 +205,30 @@ function SetupScreen(props: { model: SetupModelInput }) {
           {isDownloading ? 'Downloading speech model' : 'Loading…'}
         </Text>
 
-        <View style={styles.progressTrack}>
-          <Animated.View
-            style={[
-              styles.progressFill,
-              {
-                width: `${pct}%` as `${number}%`,
-                transitionProperty: ['width'],
-                transitionDuration: 300,
-                transitionTimingFunction: 'ease-out',
-              },
-            ]}
-          />
-        </View>
+        {isDownloading && isParakeet ? (
+          <IndeterminateProgressBar />
+        ) : (
+          <View style={styles.progressTrack}>
+            <Animated.View
+              style={[
+                styles.progressFill,
+                {
+                  width: `${pct}%` as `${number}%`,
+                  transitionProperty: ['width'],
+                  transitionDuration: 300,
+                  transitionTimingFunction: 'ease-out',
+                },
+              ]}
+            />
+          </View>
+        )}
 
         <Text style={styles.setupSubtitle}>
-          {isDownloading ? `${pct}% · ~${approxMb} MB · one-time download` : ''}
+          {isDownloading
+            ? isParakeet
+              ? `~${approxMb} MB · one-time download`
+              : `${pct}% · ~${approxMb} MB · one-time download`
+            : ''}
         </Text>
       </View>
     </View>

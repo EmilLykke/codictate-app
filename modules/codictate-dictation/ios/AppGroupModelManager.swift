@@ -8,12 +8,12 @@ final class AppGroupModelManager {
     enum Variant: String {
         case parakeet = "parakeet"
         case base = "base"
+        case baseEn = "base_en"
 
-        /// Only whisper variants have a downloadable file in the App Group.
         var isWhisper: Bool {
             switch self {
             case .parakeet: return false
-            case .base: return true
+            case .base, .baseEn: return true
             }
         }
 
@@ -21,6 +21,7 @@ final class AppGroupModelManager {
             switch self {
             case .parakeet: return ""
             case .base: return "ggml-base-q5_1.bin"
+            case .baseEn: return "ggml-base.en-q5_1.bin"
             }
         }
 
@@ -34,13 +35,17 @@ final class AppGroupModelManager {
                 return URL(string:
                     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
                 )!
+            case .baseEn:
+                return URL(string:
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
+                )!
             }
         }
 
         var minBytes: Int64 {
             switch self {
             case .parakeet: return 0
-            case .base: return 50 * 1024 * 1024
+            case .base, .baseEn: return 50 * 1024 * 1024
             }
         }
     }
@@ -92,7 +97,7 @@ final class AppGroupModelManager {
         switch variant {
         case .parakeet:
             return parakeetModelDirectory?.path
-        case .base:
+        case .base, .baseEn:
             return containerURL?.appendingPathComponent(variant.filename).path
         }
     }
@@ -101,7 +106,7 @@ final class AppGroupModelManager {
         switch variant {
         case .parakeet:
             return parakeetModelIsReady()
-        case .base:
+        case .base, .baseEn:
             guard let path = modelFilePath(for: variant) else { return false }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             let size = (attrs?[.size] as? Int64) ?? 0

@@ -100,6 +100,10 @@ const config: ExpoConfig = {
           "Codictate uses the microphone to record your voice for on-device transcription.",
       },
     ],
+    "expo-font",
+    "expo-image",
+    "expo-status-bar",
+    "expo-web-browser",
   ],
   assetBundlePatterns: ["assets/models/*"],
   experiments: {

@@ -148,12 +148,12 @@ public final class CodictateDictationModule: Module {
         // MARK: - Model management
 
         AsyncFunction("isModelReady") { (variantStr: String?) -> Bool in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             return AppGroupModelManager.shared.modelIsReady(for: variant)
         }
 
         AsyncFunction("ensureModel") { (variantStr: String?) async throws -> Void in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             return try await withCheckedThrowingContinuation { continuation in
                 AppGroupModelManager.shared.ensureModel(
                     variant: variant,
@@ -171,7 +171,7 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("deleteModel") { (variantStr: String?) -> Void in
-            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .parakeet
+            let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             if variant == .parakeet {
                 if let dir = AppGroupModelManager.shared.parakeetModelDirectory {
                     try? FileManager.default.removeItem(at: dir)
@@ -191,7 +191,7 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("listModels") { () -> [[String: Any]] in
-            let variants: [AppGroupModelManager.Variant] = [.parakeet, .base]
+            let variants: [AppGroupModelManager.Variant] = [.parakeet, .base, .baseEn]
             return variants.map { variant in
                 let ready = AppGroupModelManager.shared.modelIsReady(for: variant)
                 var size: Int64 = 0
@@ -215,15 +215,15 @@ public final class CodictateDictationModule: Module {
         }
 
         AsyncFunction("getPreferredModel") { () -> String in
-            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.parakeet.rawValue }
-            let raw = suite.string(forKey: Self.preferredVariantKey) ?? AppGroupModelManager.Variant.parakeet.rawValue
-            return AppGroupModelManager.Variant(rawValue: raw)?.rawValue ?? AppGroupModelManager.Variant.parakeet.rawValue
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return AppGroupModelManager.Variant.base.rawValue }
+            let raw = suite.string(forKey: Self.preferredVariantKey) ?? AppGroupModelManager.Variant.base.rawValue
+            return AppGroupModelManager.Variant(rawValue: raw)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
         }
 
         AsyncFunction("setPreferredModel") { (variantStr: String?) -> Void in
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
             let trimmed = (variantStr ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.parakeet.rawValue
+            let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
             suite.set(value, forKey: Self.preferredVariantKey)
             suite.synchronize()
         }

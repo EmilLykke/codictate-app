@@ -4,6 +4,7 @@ import Foundation
 /// the GGML model from the App Group container via ModelManager.
 final class WhisperEngine: TranscriptionEngine {
 
+    var activeVariant: ModelManager.Variant = .base
     private let bridge = WhisperBridge()
     private var loadedModelPath: String?
 
@@ -21,7 +22,7 @@ final class WhisperEngine: TranscriptionEngine {
     private func ensureModel() async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             ModelManager.shared.ensureModel(
-                variant: .base,
+                variant: self.activeVariant,
                 onProgress: { _ in },
                 onComplete: { result in
                     switch result {

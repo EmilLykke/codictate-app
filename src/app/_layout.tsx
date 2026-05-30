@@ -8,8 +8,12 @@ import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
+import { Appearance } from 'react-native'
 import { appColors, appFontFamily } from '../constants/AppColors'
+
+Appearance.setColorScheme('dark')
 import { TranscriptionLanguageProvider } from '../hooks/settings/transcription-language-context'
+import { ModelManagementProvider } from '../hooks/whisper/model-management-context'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -39,17 +43,19 @@ export default function RootLayout() {
 
   return (
     <TranscriptionLanguageProvider>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          contentStyle: { backgroundColor: appColors.page },
-          headerStyle: { backgroundColor: appColors.page },
-          headerTintColor: appColors.foreground,
-          headerTitleStyle: { fontFamily: appFontFamily.sans },
-          headerShadowVisible: false,
-          headerShown: false,
-        }}
-      />
+      <ModelManagementProvider>
+        <StatusBar style="light" />
+        <Stack
+          screenOptions={{
+            contentStyle: { backgroundColor: appColors.page },
+            headerStyle: { backgroundColor: appColors.page },
+            headerTintColor: appColors.foreground,
+            headerTitleStyle: { fontFamily: appFontFamily.sans },
+            headerShadowVisible: false,
+            headerShown: false,
+          }}
+        />
+      </ModelManagementProvider>
     </TranscriptionLanguageProvider>
   )
 }

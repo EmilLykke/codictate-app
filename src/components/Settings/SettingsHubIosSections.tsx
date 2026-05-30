@@ -1,15 +1,14 @@
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import * as Haptics from 'expo-haptics'
 import { Image } from 'expo-image'
 import { useCallback, useState } from 'react'
 import { Alert, Linking, Pressable, Text, View } from 'react-native'
 import { appColors } from '@/constants/AppColors'
 import {
-  endKeyboardWarmSession,
   getKeyboardWarmDuration,
-  isKeyboardWarmSessionActive,
   setKeyboardWarmDuration,
 } from 'codictate-dictation'
+import { useWarmSession } from '@/hooks/whisper/use-warm-session'
 import {
   ACTION_BUTTON_SHORTCUT_URL,
   IOS_SETTINGS_ROOT_URL,
@@ -107,23 +106,13 @@ export function SettingsHubKeyboardSection() {
 }
 
 export function SettingsHubWarmSessionSection() {
+  const warmSession = useWarmSession()
   const [warmDurationSeconds, setWarmDurationSeconds] = useState(60)
-  const [isWarmSessionActive, setIsWarmSessionActive] = useState(false)
-
-  const refreshKeyboardWarmUi = useCallback(() => {
-    void Promise.all([
-      getKeyboardWarmDuration(),
-      isKeyboardWarmSessionActive(),
-    ]).then(([duration, active]) => {
-      setWarmDurationSeconds(duration)
-      setIsWarmSessionActive(active)
-    })
-  }, [])
 
   useFocusEffect(
     useCallback(() => {
-      refreshKeyboardWarmUi()
-    }, [refreshKeyboardWarmUi])
+      void getKeyboardWarmDuration().then(setWarmDurationSeconds)
+    }, [])
   )
 
   return (
@@ -169,17 +158,9 @@ export function SettingsHubWarmSessionSection() {
           )
         })}
       </View>
-      {isWarmSessionActive ? (
+      {warmSession.isActive ? (
         <Pressable
-          onPress={() => {
-            void (async () => {
-              await endKeyboardWarmSession()
-              setIsWarmSessionActive(false)
-              await Haptics.notificationAsync(
-                Haptics.NotificationFeedbackType.Success
-              )
-            })()
-          }}
+          onPress={() => void warmSession.end()}
           style={({ pressed }) => [
             styles.shortcutButton,
             pressed ? styles.rowPressed : null,

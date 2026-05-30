@@ -68,8 +68,14 @@ private final class TranscriptionRouter {
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
-        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "parakeet"
-        let engine: TranscriptionEngine = preferred == "base" ? whisper : parakeet
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
+        let engine: TranscriptionEngine
+        if preferred == "parakeet" {
+            engine = parakeet
+        } else {
+            whisper.activeVariant = ModelManager.Variant(rawValue: preferred) ?? .base
+            engine = whisper
+        }
 
         Task {
             do {
@@ -1122,7 +1128,7 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     private static func firstUseParakeetLiveActivityMessageIfNeeded(suite: UserDefaults) -> String? {
-        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "parakeet"
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
         guard preferred == "parakeet" else { return nil }
         guard !suite.bool(forKey: KeyboardDictationBridge.parakeetModelReadyKey) else { return nil }
         return firstUseParakeetLiveActivityMessage
