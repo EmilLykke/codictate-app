@@ -67,6 +67,25 @@ export function ScreenSettingsHub() {
             />
           </Pressable>
         </Link>
+
+        <Link href={'/settings/licenses' as Href} asChild>
+          <Pressable style={styles.hubRow}>
+            <View style={styles.hubRowMain}>
+              <Text style={styles.hubRowTitle} selectable>
+                Open-source licenses
+              </Text>
+              <Text style={styles.hubRowSubtitle} selectable>
+                Whisper, Parakeet, FluidAudio
+              </Text>
+            </View>
+            <Image
+              source="sf:chevron.right"
+              style={styles.chevron}
+              contentFit="contain"
+              tintColor={appColors.foregroundSubtle}
+            />
+          </Pressable>
+        </Link>
       </SectionCard>
     </SettingsScroll>
   )
