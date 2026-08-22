@@ -7,7 +7,7 @@ import withCrispASR from "./plugins/withCrispASR";
 const config: ExpoConfig = {
   name: "Codictate",
   slug: "codictate",
-  version: "1.0.0",
+  version: "1.0.1",
   orientation: "portrait",
   icon: "./assets/icon.iconset/icon_512x512@2x.png",
   scheme: "codictateapp",
