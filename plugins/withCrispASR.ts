@@ -17,9 +17,14 @@
  *     Code Sign On Copy, because it is a dynamic framework.
  *  4. Appends the framework/header search paths to the main app target.
  *
- * It never downloads anything: `bun run fetch-crispasr` owns that, and this
- * plugin fails loudly when the fetch has not run. All Xcode edits live here;
- * do not hand-edit ios/*.xcodeproj.
+ * `bun run fetch-crispasr` normally puts the framework in place before prebuild
+ * runs, via the prebuild scripts and the eas-build-post-install hook. When it
+ * has not, this plugin runs that same script itself rather than failing: an
+ * EAS sandbox that skips the hook would otherwise fail prebuild with an error
+ * EAS cannot classify, which reads as "Unknown error". The fetch is idempotent
+ * and no-ops in about 0.2s once vendors/crispasr is populated, so the normal
+ * path costs nothing. All Xcode edits live here; do not hand-edit
+ * ios/*.xcodeproj.
  *
  * Ordering note: Expo runs mods in reverse registration order, so this plugin
  * is applied *innermost* in app.config.ts to make its Xcode mod run last. That
@@ -35,6 +40,7 @@ import {
 } from "expo/config-plugins";
 import * as path from "path";
 import * as fs from "fs";
+import { execFileSync } from "child_process";
 
 import {
   CRISPASR_COHERE_HEADER,
@@ -58,11 +64,50 @@ const XCFRAMEWORK_PROJECT_PATH = `${IOS_VENDOR_DIR}/${CRISPASR_XCFRAMEWORK_NAME}
 /** Guards the copy so a version bump cannot leave a stale framework in ios/. */
 const IOS_VERSION_STAMP = `${IOS_VENDOR_DIR}/.crispasr-version`;
 
-const MISSING_VENDOR_HINT =
-  `[withCrispASR] ${CRISPASR_VENDOR_XCFRAMEWORK} not found.\n` +
-  `Run \`bun run fetch-crispasr\` first (the prebuild scripts chain it, and EAS runs it ` +
-  `from eas-build-post-install). This plugin never downloads; a ~500 MB fetch does not ` +
-  `belong inside a config plugin.`;
+/**
+ * Runs `bun run fetch-crispasr` when the vendored framework is missing.
+ *
+ * The fetch is meant to have happened already (the prebuild scripts chain it,
+ * and EAS runs it from eas-build-post-install). This is the safety net for the
+ * environments where it did not, because the alternative is prebuild dying with
+ * a plugin error that EAS reports only as "Unknown error". It is invoked with
+ * `bun` rather than `tsx` so it does not depend on a devDependency surviving
+ * whatever install mode the build environment chose.
+ */
+function ensureVendoredCrispASR(projectRoot: string): void {
+  const xcframework = path.join(projectRoot, CRISPASR_VENDOR_XCFRAMEWORK);
+  const header = path.join(
+    projectRoot,
+    CRISPASR_VENDOR_INCLUDE_DIR,
+    CRISPASR_COHERE_HEADER,
+  );
+  if (fs.existsSync(xcframework) && fs.existsSync(header)) return;
+
+  console.log(
+    `[withCrispASR] ${CRISPASR_VENDOR_XCFRAMEWORK} missing, running fetch-crispasr`,
+  );
+  try {
+    execFileSync("bun", ["scripts/fetch-crispasr.ts"], {
+      cwd: projectRoot,
+      stdio: "inherit",
+    });
+  } catch (error) {
+    throw new Error(
+      `[withCrispASR] fetch-crispasr failed, so ${CRISPASR_VENDOR_XCFRAMEWORK} is not available.\n` +
+        `Run \`bun run fetch-crispasr\` by hand to see the underlying error.`,
+      { cause: error },
+    );
+  }
+
+  const stillMissing = [xcframework, header].filter((p) => !fs.existsSync(p));
+  if (stillMissing.length > 0) {
+    throw new Error(
+      `[withCrispASR] fetch-crispasr reported success but these are still absent:\n` +
+        stillMissing.map((p) => `  ${p}`).join("\n") +
+        `\nDelete vendors/crispasr and run \`bun run fetch-crispasr\` again.`,
+    );
+  }
+}
 
 function unquote(value: string | undefined): string {
   return (value ?? "").replace(/^"|"$/g, "");
@@ -238,25 +283,17 @@ const withCrispASR: ConfigPlugin = (config) => {
   config = withDangerousMod(config, [
     "ios",
     (c) => {
+      ensureVendoredCrispASR(c.modRequest.projectRoot);
+
       const vendorSrc = path.join(
         c.modRequest.projectRoot,
         CRISPASR_VENDOR_XCFRAMEWORK,
       );
-      if (!fs.existsSync(vendorSrc)) {
-        throw new Error(MISSING_VENDOR_HINT);
-      }
-
       const headerSrc = path.join(
         c.modRequest.projectRoot,
         CRISPASR_VENDOR_INCLUDE_DIR,
         CRISPASR_COHERE_HEADER,
       );
-      if (!fs.existsSync(headerSrc)) {
-        throw new Error(
-          `[withCrispASR] ${CRISPASR_VENDOR_INCLUDE_DIR}/${CRISPASR_COHERE_HEADER} not found.\n` +
-            `Delete vendors/crispasr/.version and run \`bun run fetch-crispasr\` again.`,
-        );
-      }
 
       const vendorDest = path.join(
         c.modRequest.platformProjectRoot,

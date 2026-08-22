@@ -7,7 +7,7 @@
     "reset-project": "node ./scripts/reset-project.js",
     "ios": "expo run:ios",
     "android": "expo run:android",
-    "fetch-crispasr": "tsx scripts/fetch-crispasr.ts",
+    "fetch-crispasr": "bun scripts/fetch-crispasr.ts",
     "prebuild:ios": "bun run fetch-crispasr && expo prebuild --platform ios",
     "prebuild": "bun run fetch-crispasr && expo prebuild",
     "eas-build-post-install": "bun run fetch-crispasr",
