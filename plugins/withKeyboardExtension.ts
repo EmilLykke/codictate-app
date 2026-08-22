@@ -7,11 +7,12 @@
  *
  * During prebuild this plugin:
  *  1. Copies extension sources from targets/CodictateDictationKeyboard/ to ios/.
- *  2. Copies WhisperBridge.h into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
+ *  2. Copies WhisperBridge.h / CohereBridge.h into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
  *  3. Copies other targets/codictateapp/*.swift into ios/codictateapp/ (not KeyboardHostRecorder; see 4).
  *  4. Injects targets/codictateapp/KeyboardHostRecorder.swift into AppDelegate.swift (app target).
- *  5. Patches AppDelegate for codictateapp://keyboard-record.
- *  6. Adds App Group entitlement, keyboard extension (UIKit-only), links WhisperBridge.mm + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
+ *  5. Patches AppDelegate for codictateapp://keyboard-record and for background
+ *     URLSession events (Speech Model downloads that finish while the app is away).
+ *  6. Adds App Group entitlement, keyboard extension (UIKit-only), links the ASR bridges + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
  *
  * All Xcode edits live in this plugin only. Do not hand-edit ios/*.xcodeproj; prebuild regenerates ios/.
  */
@@ -53,9 +54,6 @@ const HOST_RECORDER_FILE = "KeyboardHostRecorder.swift";
 
 const WIDGET_TARGET_NAME = "ExpoWidgetsTarget";
 const CONTROL_WIDGET_FILE = "DictationControl.swift";
-
-const RNWHISPER_XCFRAMEWORK =
-  "../node_modules/whisper.rn/ios/rnwhisper.xcframework";
 
 // node-xcode `pbxFile` resolves the canonical path stored in PBXFileReference
 // (e.g. UIKit.framework to System/Library/Frameworks/UIKit.framework).
@@ -585,15 +583,6 @@ function syncKeyboardExtensionAndWireHostTranscription(
       }
     }
 
-    try {
-      project.removeFramework(RNWHISPER_XCFRAMEWORK, {
-        target: extUuid,
-        customFramework: true,
-      });
-    } catch {
-      /* not linked */
-    }
-
     for (const filename of EXTENSION_SOURCES) {
       project.addSourceFile(filename, { target: extUuid }, extGroupKey);
     }
@@ -613,6 +602,18 @@ function syncKeyboardExtensionAndWireHostTranscription(
     ensureSourceFileBuiltByMainAppTarget(
       project,
       `${appTargetName}/WhisperBridge.mm`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/CohereBridge.mm`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/WavPCMReader.mm`,
       hostSourceGroup,
       appUuid,
     );
@@ -654,13 +655,37 @@ function syncKeyboardExtensionAndWireHostTranscription(
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
+      `${appTargetName}/CohereEngine.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/TranscriptionLanguages.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/DictationReadiness.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/BackgroundDownloadEvents.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
       `${appTargetName}/KeyboardListenSession.swift`,
       hostSourceGroup,
       appUuid,
     );
   } else {
     console.warn(
-      "[withKeyboardExtension] Could not resolve host group for ModelManager.swift / WhisperBridge.mm.",
+      "[withKeyboardExtension] Could not resolve host group for the main-app native sources.",
     );
   }
 
@@ -672,20 +697,18 @@ function syncKeyboardExtensionAndWireHostTranscription(
     appTargetName,
   );
 
-  const whisperHeaders = [
-    '"$(inherited)"',
-    `"$(SRCROOT)/../node_modules/whisper.rn/ios/rnwhisper.xcframework/ios-arm64/rnwhisper.framework/Headers"`,
-    `"$(SRCROOT)/../node_modules/whisper.rn/ios/rnwhisper.xcframework/ios-arm64_x86_64-simulator/rnwhisper.framework/Headers"`,
-  ];
+  // The ASR Harness search paths are owned by `withCrispASR`, which runs after this
+  // plugin and appends to whatever it finds. Reset to `$(inherited)` here so nothing
+  // stale survives a re-prebuild, and do not add crispasr entries in this file.
   project.updateBuildProperty(
     "HEADER_SEARCH_PATHS",
-    whisperHeaders,
+    ['"$(inherited)"'],
     undefined,
     appTargetName,
   );
   project.updateBuildProperty(
     "FRAMEWORK_SEARCH_PATHS",
-    ['"$(inherited)"', '"$(SRCROOT)/../node_modules/whisper.rn/ios"'],
+    ['"$(inherited)"'],
     undefined,
     appTargetName,
   );
@@ -697,7 +720,7 @@ function syncKeyboardExtensionAndWireHostTranscription(
   );
 }
 
-/** Reset extension target to a thin UIKit-only keyboard (no Obj-C++ / no rnwhisper). */
+/** Reset extension target to a thin UIKit-only keyboard (no Obj-C++ / no ASR). */
 function patchKeyboardExtensionBuildSettings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   project: any,
@@ -784,13 +807,15 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       );
       if (fs.existsSync(expoBridgingPath)) {
         let bridging = fs.readFileSync(expoBridgingPath, "utf8");
-        if (!/WhisperBridge\.h/.test(bridging)) {
-          bridging = `${bridging.trimEnd()}\n\n#import "WhisperBridge.h"\n`;
-          fs.writeFileSync(expoBridgingPath, bridging, "utf8");
+        // Obj-C++ bridges only. WavPCMReader.h is C++ and must never land here.
+        for (const header of ["WhisperBridge.h", "CohereBridge.h"]) {
+          if (bridging.includes(header)) continue;
+          bridging = `${bridging.trimEnd()}\n\n#import "${header}"\n`;
           console.log(
-            `[withKeyboardExtension] Patched codictateapp-Bridging-Header.h for WhisperBridge`,
+            `[withKeyboardExtension] Patched codictateapp-Bridging-Header.h for ${header}`,
           );
         }
+        fs.writeFileSync(expoBridgingPath, bridging, "utf8");
       }
 
       // Control Widget: copy DictationControl.swift into the widget extension target.
@@ -1108,6 +1133,53 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           console.log(
             "[withKeyboardExtension] Wired KeyboardHostRecorder.shared.bootstrap() into AppDelegate launch",
           );
+        }
+
+        // Background Speech Model downloads. Without this hook iOS has no way to wake
+        // the app when a download finishes while it is suspended or terminated, so
+        // `sessionSendsLaunchEvents` on the download session would do nothing.
+        if (!ad.includes("handleEventsForBackgroundURLSession")) {
+          const backgroundSessionMethod = [
+            "",
+            "  // MARK: - Background Speech Model downloads",
+            "",
+            "  /// iOS wakes the app when a background download finishes and hands over the",
+            "  /// completion handler for that session. One download session runs in this",
+            "  /// process, owned by `ModelManager` and attached from `bootstrap()` above, so the",
+            "  /// handler is answered from its `urlSessionDidFinishEvents`. This runs on a",
+            "  /// background relaunch where React Native is never initialised, which is exactly",
+            "  /// why the Expo module owns no session of its own. Any other identifier belongs",
+            "  /// to another library and goes to Expo's own subscribers.",
+            "  public override func application(",
+            "    _ application: UIApplication,",
+            "    handleEventsForBackgroundURLSession identifier: String,",
+            "    completionHandler: @escaping () -> Void",
+            "  ) {",
+            "    guard BackgroundDownloadEvents.owns(sessionIdentifier: identifier) else {",
+            "      super.application(",
+            "        application,",
+            "        handleEventsForBackgroundURLSession: identifier,",
+            "        completionHandler: completionHandler)",
+            "      return",
+            "    }",
+            "    BackgroundDownloadEvents.shared.store(completionHandler: completionHandler)",
+            "  }",
+            "",
+          ].join("\n");
+          const classEnd4 = ad.indexOf("\n}\n");
+          if (classEnd4 !== -1) {
+            ad =
+              ad.slice(0, classEnd4) +
+              backgroundSessionMethod +
+              ad.slice(classEnd4);
+            console.log(
+              "[withKeyboardExtension] Injected background URLSession handler into AppDelegate",
+            );
+          } else {
+            console.warn(
+              "[withKeyboardExtension] Could not inject background URLSession handler - AppDelegate format unrecognized",
+            );
+          }
         }
 
         if (fs.existsSync(recorderSrcPath)) {

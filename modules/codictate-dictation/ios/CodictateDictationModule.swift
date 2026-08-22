@@ -15,6 +15,12 @@ public final class CodictateDictationModule: Module {
     private static let appGroupID = "group.app.codictate"
     /// In-app dictation + Action Button. Must match KeyboardDictationBridge.preferredVariantKey.
     private static let preferredVariantKey = "preferredModelVariant"
+    /// Transcription Language picker id, or "auto". JS writes, the Host reads.
+    private static let transcriptionLanguageKey = "transcriptionLanguageId"
+    /// Dictation Readiness JSON. The Host writes, JS reads. Never resolved here: keyboard
+    /// and Action Button dictation run with no React Native process alive.
+    private static let dictationReadinessKey = "dictationReadiness"
+    private static let automaticLanguageId = "auto"
     private static let phaseKey = "kbdDictationPhase"
     private static let transcriptKey = "kbdTranscript"
     private static let errorKey = "kbdDictationHostError"
@@ -37,17 +43,32 @@ public final class CodictateDictationModule: Module {
     private static let transcriptReadyNotification = Notification.Name("codictate.dictation.transcriptReady")
     private static let failedNotification = Notification.Name("codictate.dictation.failed")
 
+    // Mirror of `DictationReadinessNotification`.
+    private static let readinessChangedNotification = Notification.Name("codictate.readiness.changed")
+    private static let readinessRecomputeNotification = Notification.Name("codictate.readiness.recompute")
+    /// The JS event name is the same literal as the notification name, on purpose.
+    private static let readinessEventName = "codictate.readiness.changed"
+
     private var stateObserver: NSObjectProtocol?
     private var transcriptObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
+    private var readinessObserver: NSObjectProtocol?
 
     public func definition() -> ModuleDefinition {
         Name("CodictateDictation")
 
-        Events("onStateChange", "onTranscript", "onError", "onModelProgress")
+        Events("onStateChange", "onTranscript", "onError", "onModelProgress", Self.readinessEventName)
 
         OnCreate {
             self.installObservers()
+            // No background URLSession is attached here on purpose. iOS relaunches a
+            // terminated app to finish one without initialising React Native, so this
+            // never runs on the launch that matters. The Host owns the session.
+            //
+            // The Host owns the readiness resolver too; ask it to publish so a first
+            // render reads a value that was actually computed rather than an assumed
+            // "runnable".
+            Self.requestReadinessRecompute()
         }
 
         OnDestroy {
@@ -145,6 +166,35 @@ public final class CodictateDictationModule: Module {
             NotificationCenter.default.post(name: Self.endKeyboardWarmSessionNotification, object: nil)
         }
 
+        // MARK: - Transcription Language + Dictation Readiness
+
+        // Declared `Function`, not `AsyncFunction`, on purpose: JS calls both getters
+        // during first render, in a provider and a hook initializer, without a try/catch.
+
+        Function("getTranscriptionLanguageId") { () -> String in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else {
+                return Self.automaticLanguageId
+            }
+            let raw = (suite.string(forKey: Self.transcriptionLanguageKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return raw.isEmpty ? Self.automaticLanguageId : raw
+        }
+
+        Function("setTranscriptionLanguageId") { (id: String) -> Void in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            suite.set(
+                trimmed.isEmpty ? Self.automaticLanguageId : trimmed,
+                forKey: Self.transcriptionLanguageKey
+            )
+            suite.synchronize()
+            Self.requestReadinessRecompute()
+        }
+
+        Function("getDictationReadiness") { () -> [String: Any?] in
+            Self.readReadiness()
+        }
+
         // MARK: - Model management
 
         AsyncFunction("isModelReady") { (variantStr: String?) -> Bool in
@@ -161,6 +211,7 @@ public final class CodictateDictationModule: Module {
                         self?.sendEvent("onModelProgress", ["variant": variant.rawValue, "progress": progress])
                     },
                     onComplete: { result in
+                        Self.requestReadinessRecompute()
                         switch result {
                         case .success: continuation.resume()
                         case .failure(let err): continuation.resume(throwing: err)
@@ -184,15 +235,16 @@ public final class CodictateDictationModule: Module {
                     name: Notification.Name("codictate.parakeet.reset"),
                     object: nil
                 )
+                Self.requestReadinessRecompute()
                 return
             }
             guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }
             try? FileManager.default.removeItem(atPath: path)
+            Self.requestReadinessRecompute()
         }
 
-        AsyncFunction("listModels") { () -> [[String: Any]] in
-            let variants: [AppGroupModelManager.Variant] = [.parakeet, .base, .baseEn]
-            return variants.map { variant in
+        AsyncFunction("listModels") { () -> [[String: Any?]] in
+            return AppGroupModelManager.Variant.all.map { variant in
                 let ready = AppGroupModelManager.shared.modelIsReady(for: variant)
                 var size: Int64 = 0
                 if variant == .parakeet {
@@ -210,7 +262,18 @@ public final class CodictateDictationModule: Module {
                           let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
                     size = (attrs[.size] as? Int64) ?? 0
                 }
-                return ["variant": variant.rawValue, "ready": ready, "size": size]
+                return [
+                    "variant": variant.rawValue,
+                    "ready": ready,
+                    "size": size,
+                    "label": variant.label,
+                    "engine": variant.engine.rawValue,
+                    // Language Lock. `supportedLanguages` nil means the full picker;
+                    // `locksLanguageToAutomatic` is Parakeet, which takes no language input.
+                    "supportedLanguages": variant.supportedLanguages,
+                    "locksLanguageToAutomatic": variant.locksLanguageToAutomatic,
+                    "pinnedLanguageId": variant.pinnedLanguageId,
+                ]
             }
         }
 
@@ -226,6 +289,7 @@ public final class CodictateDictationModule: Module {
             let value = AppGroupModelManager.Variant(rawValue: trimmed)?.rawValue ?? AppGroupModelManager.Variant.base.rawValue
             suite.set(value, forKey: Self.preferredVariantKey)
             suite.synchronize()
+            Self.requestReadinessRecompute()
         }
     }
 
@@ -267,6 +331,45 @@ public final class CodictateDictationModule: Module {
             let msg = (note.userInfo?["message"] as? String) ?? "Dictation failed."
             self.sendEvent("onError", ["message": msg])
         }
+
+        readinessObserver = NotificationCenter.default.addObserver(
+            forName: Self.readinessChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            // The payload is the readiness object itself, not a wrapper.
+            let raw = (note.userInfo as? [String: Any]) ?? [:]
+            self.sendEvent(Self.readinessEventName, Self.normalizeReadiness(raw))
+        }
+    }
+
+    // MARK: - Dictation Readiness
+
+    /// Asks the Host to re-resolve readiness. The Host owns the resolver; this module
+    /// only reads what it published.
+    private static func requestReadinessRecompute() {
+        NotificationCenter.default.post(name: readinessRecomputeNotification, object: nil)
+    }
+
+    private static func readReadiness() -> [String: Any?] {
+        guard let suite = UserDefaults(suiteName: appGroupID),
+              let data = suite.data(forKey: dictationReadinessKey),
+              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return normalizeReadiness([:])
+        }
+        return normalizeReadiness(raw)
+    }
+
+    /// The stored JSON carries NSNull for the two nullable fields; JS wants real nulls.
+    /// `as? String` turns NSNull into nil, which is exactly the conversion needed.
+    private static func normalizeReadiness(_ raw: [String: Any]) -> [String: Any?] {
+        let blocked = (raw["blocked"] as? Bool) ?? false
+        return [
+            "blocked": blocked,
+            "reason": blocked ? (raw["reason"] as? String) : nil,
+            "message": blocked ? (raw["message"] as? String) : nil,
+        ]
     }
 
     private static func clampWarmDuration(_ seconds: Int) -> Int {
@@ -284,8 +387,10 @@ public final class CodictateDictationModule: Module {
         if let stateObserver { NotificationCenter.default.removeObserver(stateObserver) }
         if let transcriptObserver { NotificationCenter.default.removeObserver(transcriptObserver) }
         if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
+        if let readinessObserver { NotificationCenter.default.removeObserver(readinessObserver) }
         stateObserver = nil
         transcriptObserver = nil
         failureObserver = nil
+        readinessObserver = nil
     }
 }

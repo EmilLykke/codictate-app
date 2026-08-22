@@ -1,79 +1,14 @@
 #import "WhisperBridge.h"
-#import <whisper.h>
-#import <AVFoundation/AVFoundation.h>
+#import "WavPCMReader.h"
+#import <TargetConditionals.h>
+
+// crispasr's framework exports the whisper C API this bridge was already written
+// against. Quoted, not <crispasr/crispasr.h>: withCrispASR puts both xcframework
+// slices' Headers/ on HEADER_SEARCH_PATHS, which resolves the quoted form without
+// depending on how Xcode surfaces the framework module.
+#import "crispasr.h"
 
 #include <vector>
-
-// ---------------------------------------------------------------------------
-// Helper: read a 16-kHz mono WAV file into a float32 PCM buffer.
-// Whisper requires 32-bit float PCM at exactly 16 000 Hz, mono.
-// ---------------------------------------------------------------------------
-static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
-    std::vector<float> samples;
-
-    NSURL *url = [NSURL fileURLWithPath:path];
-    AVAudioFile *file = [[AVAudioFile alloc] initForReading:url error:outError];
-    if (!file) return samples;
-
-    // Build a format descriptor: 16 kHz, mono, float32
-    AVAudioFormat *targetFormat = [[AVAudioFormat alloc]
-        initWithCommonFormat:AVAudioPCMFormatFloat32
-                  sampleRate:16000.0
-                    channels:1
-                 interleaved:NO];
-    if (!targetFormat) {
-        if (outError) *outError = [NSError errorWithDomain:@"WhisperBridge" code:1
-            userInfo:@{NSLocalizedDescriptionKey: @"Failed to create target format"}];
-        return samples;
-    }
-
-    // Use AVAudioConverter to resample if necessary
-    AVAudioConverter *converter = [[AVAudioConverter alloc]
-        initFromFormat:file.processingFormat
-              toFormat:targetFormat];
-
-    // Allocate a buffer for the entire file in the source format
-    AVAudioFrameCount frameCapacity = (AVAudioFrameCount)file.length;
-    AVAudioPCMBuffer *sourceBuffer = [[AVAudioPCMBuffer alloc]
-        initWithPCMFormat:file.processingFormat
-            frameCapacity:frameCapacity];
-    if (!sourceBuffer) return samples;
-
-    if (![file readIntoBuffer:sourceBuffer error:outError]) return samples;
-
-    // Allocate output buffer (16 kHz might differ in frame count)
-    double ratio = 16000.0 / file.processingFormat.sampleRate;
-    AVAudioFrameCount outFrames = (AVAudioFrameCount)(frameCapacity * ratio + 1);
-    AVAudioPCMBuffer *outputBuffer = [[AVAudioPCMBuffer alloc]
-        initWithPCMFormat:targetFormat
-            frameCapacity:outFrames];
-    if (!outputBuffer) return samples;
-
-    // Convert / resample
-    __block BOOL inputConsumed = NO;
-    AVAudioConverterOutputStatus status = [converter
-        convertToBuffer:outputBuffer
-                  error:outError
-     withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount inNumPackets,
-                                         AVAudioConverterInputStatus *outStatus) {
-        if (inputConsumed) {
-            *outStatus = AVAudioConverterInputStatus_NoDataNow;
-            return nil;
-        }
-        inputConsumed = YES;
-        *outStatus = AVAudioConverterInputStatus_HaveData;
-        return sourceBuffer;
-    }];
-
-    if (status == AVAudioConverterOutputStatus_Error) return samples;
-
-    AVAudioFrameCount framesFilled = outputBuffer.frameLength;
-    float *data = outputBuffer.floatChannelData[0];
-    samples.assign(data, data + framesFilled);
-    return samples;
-}
-
-// ---------------------------------------------------------------------------
 
 @implementation WhisperBridge {
     struct whisper_context *_ctx;
@@ -97,8 +32,14 @@ static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
     [self unloadModel];
 
     struct whisper_context_params cparams = whisper_context_default_params();
-    cparams.use_gpu = false; // GPU not available in extensions
-    cparams.use_coreml = false;
+    // This file is built by the main app target only, never by the keyboard extension,
+    // so Metal is available.  The old "GPU not available in extensions" comment was
+    // describing a target this bridge has never been in.
+    cparams.use_gpu = true;
+#if TARGET_OS_SIMULATOR
+    // ggml's Metal backend is unreliable under the simulator; force the CPU backend.
+    cparams.use_gpu = false;
+#endif
 
     struct whisper_context *ctx =
         whisper_init_from_file_with_params(path.UTF8String, cparams);
@@ -130,7 +71,7 @@ static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
     dispatch_async(_queue, ^{
         // Read WAV into float PCM
         NSError *readError = nil;
-        std::vector<float> pcm = readWavAsPCMF32(wavPath, &readError);
+        std::vector<float> pcm = CodictateReadWavAsPCMF32(wavPath, &readError);
 
         if (readError || pcm.empty()) {
             NSString *msg = readError.localizedDescription ?: @"Failed to read audio file.";
@@ -139,7 +80,7 @@ static std::vector<float> readWavAsPCMF32(NSString *path, NSError **outError) {
         }
 
         // Run inference
-        struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        struct whisper_full_params params = whisper_full_default_params(CRISPASR_SAMPLING_GREEDY);
         params.print_progress   = false;
         params.print_realtime   = false;
         params.print_timestamps = false;

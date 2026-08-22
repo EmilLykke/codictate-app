@@ -21,12 +21,14 @@ import {
 import { ButtonHeaderSettings } from '@/components/Settings/ButtonHeaderSettings'
 import { RecordButton } from '@/components/Dictation/RecordButton'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
-import { MODEL_SIZE_MB } from '@/components/Settings/settings-shared'
+import { speechModelSizeMb } from '@/constants/speech-models'
 import { IndeterminateProgressBar } from '@/components/IndeterminateProgressBar'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
 import { useWarmSession } from '@/hooks/whisper/use-warm-session'
 import { useSharedModelManagement } from '@/hooks/whisper/model-management-context'
 import { WarmSessionBanner } from '@/components/Dictation/WarmSessionBanner'
+import { DictationReadinessBanner } from '@/components/DictationReadinessBanner'
+import { useDictationReadiness } from '@/hooks/whisper/use-dictation-readiness'
 import { ModelLanguageChips } from '@/components/Dictation/ModelLanguageChips'
 import { ModelSwitcherSheet } from '@/components/Dictation/ModelSwitcherSheet'
 import { LanguageSwitcherSheet } from '@/components/Dictation/LanguageSwitcherSheet'
@@ -68,6 +70,7 @@ function DictationScreen() {
   const insets = useSafeAreaInsets()
   const warmSession = useWarmSession()
   const modelMgmt = useSharedModelManagement()
+  const readiness = useDictationReadiness()
   const { dictState, transcript, dictError, start, stop, clear } =
     useRealtimeDictation()
   const [draft, setDraft] = useState('')
@@ -83,7 +86,7 @@ function DictationScreen() {
   const handleButtonPress = () => {
     if (isRecording) {
       stop()
-    } else if (dictState === 'idle') {
+    } else if (dictState === 'idle' && !readiness.blocked) {
       start()
     }
   }
@@ -154,6 +157,8 @@ function DictationScreen() {
           <WarmSessionBanner onEnd={() => void warmSession.end()} />
         ) : null}
 
+        <DictationReadinessBanner readiness={readiness} />
+
         {dictError ? (
           <View style={styles.errorBadge}>
             <Text style={styles.errorText} selectable>
@@ -163,13 +168,19 @@ function DictationScreen() {
         ) : null}
 
         <View style={styles.controlsColumn}>
-          <RecordButton dictState={dictState} onPress={handleButtonPress} />
+          <RecordButton
+            dictState={dictState}
+            onPress={handleButtonPress}
+            blocked={readiness.blocked}
+          />
           <Text style={styles.hint}>
             {isRecording
               ? 'Tap to stop'
               : isProcessing
                 ? 'Transcribing…'
-                : 'Tap to dictate'}
+                : readiness.blocked
+                  ? 'Dictation unavailable'
+                  : 'Tap to dictate'}
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -195,7 +206,7 @@ function SetupScreen(props: { model: SetupModelInput }) {
   const progress = isDownloading ? model.progress : 0
   const pct = Math.round(progress * 100)
   const variant = isDownloading ? model.variant : 'base'
-  const approxMb = MODEL_SIZE_MB[variant] ?? '57'
+  const approxMb = speechModelSizeMb(variant)
   const isParakeet = variant === 'parakeet'
 
   return (

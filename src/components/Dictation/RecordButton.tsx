@@ -7,6 +7,8 @@ import type { DictationState } from '@/hooks/whisper/use-realtime-dictation'
 type RecordButtonProps = {
   dictState: DictationState
   onPress: () => void
+  /** Dictation Readiness is blocked. Shown as unavailable, never worked around. */
+  blocked?: boolean
 }
 
 const BUTTON_SIZE = 80
@@ -19,9 +21,15 @@ const pulseOut = {
 
 const PULSE_DELAYS = [0, 550, 1100]
 
-export function RecordButton({ dictState, onPress }: RecordButtonProps) {
+export function RecordButton({
+  dictState,
+  onPress,
+  blocked = false,
+}: RecordButtonProps) {
   const isRecording = dictState === 'recording'
   const isProcessing = dictState === 'processing'
+  // A recording already under way must still be stoppable.
+  const disabled = isProcessing || (blocked && !isRecording)
 
   const handlePress = async () => {
     await Haptics.impactAsync(
@@ -35,10 +43,11 @@ export function RecordButton({ dictState, onPress }: RecordButtonProps) {
   return (
     <Pressable
       onPress={handlePress}
-      disabled={isProcessing}
+      disabled={disabled}
       style={styles.hitArea}
       accessibilityLabel={isRecording ? 'Stop recording' : 'Start recording'}
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
     >
       {/* Expanding pulse rings — mounted only while recording */}
       {isRecording &&
@@ -64,6 +73,7 @@ export function RecordButton({ dictState, onPress }: RecordButtonProps) {
       <Animated.View
         style={[
           styles.button,
+          blocked && !isRecording ? styles.buttonBlocked : null,
           {
             backgroundColor: isRecording
               ? '#DC2626'
@@ -105,6 +115,9 @@ const styles = StyleSheet.create({
     borderRadius: RING_SIZE / 2,
     borderWidth: 1.5,
     borderColor: '#DC2626',
+  },
+  buttonBlocked: {
+    opacity: 0.4,
   },
   button: {
     width: BUTTON_SIZE,

@@ -249,6 +249,17 @@ final class KeyboardListenSession {
             return
         }
 
+        // The warm path never goes through startSessionInternal, so it gates on
+        // Dictation Readiness itself.
+        let readiness = DictationReadiness.shared.publish()
+        if readiness.blocked {
+            KeyboardHostRecorder.shared.failPublic(
+                suite,
+                readiness.message ?? "Dictation cannot start right now."
+            )
+            return
+        }
+
         samplesLock.lock()
         capturedSamples.removeAll(keepingCapacity: true)
         samplesLock.unlock()

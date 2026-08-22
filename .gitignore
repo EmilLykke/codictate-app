@@ -45,3 +45,6 @@ app-example
 # generated native folders
 /ios
 /android
+
+# fetched vendor binaries (crispasr xcframework); see scripts/fetch-crispasr.ts
+vendors/

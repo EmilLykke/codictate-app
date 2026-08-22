@@ -2,7 +2,11 @@ import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import { Image } from 'expo-image'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { appColors, appFontFamily } from '@/constants/AppColors'
-import { MODEL_LABELS } from '@/components/Settings/settings-shared'
+import {
+  isLanguageLocked,
+  resolveTranscriptionLanguageId,
+  speechModelLabel,
+} from '@/constants/speech-models'
 import { labelForTranscriptionLanguageId } from '@/constants/transcription-languages'
 import { useTranscriptionLanguage } from '@/hooks/settings/transcription-language-context'
 import type { ModelVariant } from 'codictate-dictation'
@@ -20,8 +24,15 @@ export function ModelLanguageChips({
   onLanguagePress,
 }: Props) {
   const { languageId } = useTranscriptionLanguage()
-  const modelLabel = MODEL_LABELS[modelVariant] ?? modelVariant
-  const languageLabel = labelForTranscriptionLanguageId(languageId)
+  const modelLabel = speechModelLabel(modelVariant)
+  // The chip names the language that will actually run, so a Locked Speech Model
+  // left on Auto-detect reads as its own language rather than as a guess.
+  const languageLabel = labelForTranscriptionLanguageId(
+    resolveTranscriptionLanguageId(modelVariant, languageId)
+  )
+  // Language Lock: the chip still opens the sheet, which is where the lock is
+  // explained and the accepted languages can be picked.
+  const languageLocked = isLanguageLocked(modelVariant)
 
   return (
     <View style={styles.row}>
@@ -33,9 +44,13 @@ export function ModelLanguageChips({
       />
       <GlassChip
         onPress={onLanguagePress}
-        icon="sf:globe"
+        icon={languageLocked ? 'sf:lock' : 'sf:globe'}
         label={languageLabel}
-        accessibilityLabel={`Language: ${languageLabel}`}
+        accessibilityLabel={
+          languageLocked
+            ? `Language: ${languageLabel}, fixed by ${modelLabel}`
+            : `Language: ${languageLabel}`
+        }
       />
     </View>
   )

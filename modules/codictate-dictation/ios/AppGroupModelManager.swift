@@ -2,19 +2,91 @@ import Foundation
 
 /// Mirrors `ModelManager` from the main app target.
 /// Duplicated intentionally -- the Expo module pod cannot import main-app symbols.
-/// Keep variant filenames, URLs, and minBytes in sync with `ModelManager.swift`.
+/// Keep variant filenames, minBytes, engines, labels and Language Locks in sync with
+/// `ModelManager.swift`. Download URLs are deliberately absent here: the Host owns every
+/// download, so this copy never needs one and the two cannot drift on it.
 final class AppGroupModelManager {
 
     enum Variant: String {
         case parakeet = "parakeet"
         case base = "base"
         case baseEn = "base_en"
+        case hviske = "hviske"
 
-        var isWhisper: Bool {
+        /// The Transcription Language id meaning "let the Speech Model decide".
+        static let automaticLanguageId = "auto"
+
+        /// The runtime that executes this Speech Model's weights.
+        enum Engine: String {
+            case parakeet
+            case whisper
+            case cohere
+        }
+
+        var engine: Engine {
             switch self {
-            case .parakeet: return false
-            case .base, .baseEn: return true
+            case .parakeet: return .parakeet
+            case .base, .baseEn: return .whisper
+            case .hviske: return .cohere
             }
+        }
+
+        var label: String {
+            switch self {
+            case .parakeet: return "Parakeet TDT v3"
+            case .base: return "Base (Q5_1)"
+            case .baseEn: return "Base.en (Q5_1)"
+            case .hviske: return "Hviske V5 Tiny Q5"
+            }
+        }
+
+        /// Language Lock: the Transcription Languages this Speech Model accepts.
+        /// `nil` means the full picker.
+        var supportedLanguages: [String]? {
+            switch self {
+            case .parakeet: return nil
+            case .base: return nil
+            case .baseEn: return ["en"]
+            case .hviske: return ["da"]
+            }
+        }
+
+        /// Parakeet takes no language input at all, so it locks to automatic rather
+        /// than to a list of codes.
+        var locksLanguageToAutomatic: Bool {
+            switch self {
+            case .parakeet: return true
+            case .base, .baseEn, .hviske: return false
+            }
+        }
+
+        /// The single Transcription Language a locked Speech Model runs, or nil when it
+        /// accepts the full list.
+        var pinnedLanguageId: String? {
+            if locksLanguageToAutomatic { return Variant.automaticLanguageId }
+            guard let supported = supportedLanguages, supported.count == 1 else { return nil }
+            return supported[0]
+        }
+
+        /// A Speech Model locked to a language list accepts exactly that list, plus the
+        /// automatic id: `auto` is the absence of a choice, not a conflicting one, and
+        /// `resolvedLanguageId` turns it into the pinned language before any engine
+        /// sees it. A Speech Model locked to automatic accepts only automatic.
+        func accepts(languageId: String) -> Bool {
+            if locksLanguageToAutomatic { return languageId == Variant.automaticLanguageId }
+            guard let supported = supportedLanguages else { return true }
+            if languageId == Variant.automaticLanguageId, pinnedLanguageId != nil { return true }
+            return supported.contains(languageId)
+        }
+
+        /// The Transcription Language the engine actually runs with. A Speech Model with
+        /// a pinned language reads the automatic id as its own language; everything else
+        /// keeps the stored id.
+        func resolvedLanguageId(_ storedId: String) -> String {
+            guard let pinned = pinnedLanguageId, storedId == Variant.automaticLanguageId else {
+                return storedId
+            }
+            return pinned
         }
 
         var filename: String {
@@ -22,48 +94,54 @@ final class AppGroupModelManager {
             case .parakeet: return ""
             case .base: return "ggml-base-q5_1.bin"
             case .baseEn: return "ggml-base.en-q5_1.bin"
+            case .hviske: return "hviske-v5-tiny-q5_0.gguf"
             }
         }
 
-        var url: URL {
-            switch self {
-            case .parakeet:
-                return URL(string:
-                    "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml"
-                )!
-            case .base:
-                return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
-                )!
-            case .baseEn:
-                return URL(string:
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
-                )!
-            }
-        }
-
+        /// Sanity floor for "these are real weights, not a truncated file or an error page".
         var minBytes: Int64 {
             switch self {
             case .parakeet: return 0
             case .base, .baseEn: return 50 * 1024 * 1024
+            case .hviske: return 150 * 1024 * 1024
             }
         }
+
+        static let all: [Variant] = [.parakeet, .base, .baseEn, .hviske]
     }
 
     static let shared = AppGroupModelManager()
 
     private let groupID = "group.app.codictate"
 
-    private typealias ParakeetWaiter = (
+    // MARK: - Cross-module notification names
+    //
+    // Mirrors of `ModelDownloadNotification` and `ParakeetModelNotification`. String
+    // literals because a separate Swift module cannot import the main app target's types.
+
+    private static let ensureModelNotification = Notification.Name("codictate.model.ensureModel")
+    private static let progressNotification = Notification.Name("codictate.model.progress")
+    private static let readyNotification = Notification.Name("codictate.model.ready")
+    private static let failedNotification = Notification.Name("codictate.model.failed")
+    private static let downloadStateChangedNotification =
+        Notification.Name("codictate.model.downloadStateChanged")
+
+    private static let parakeetEnsureModelNotification =
+        Notification.Name("codictate.parakeet.ensureModel")
+    private static let parakeetProgressNotification =
+        Notification.Name("codictate.parakeet.progress")
+    private static let parakeetReadyNotification = Notification.Name("codictate.parakeet.ready")
+    private static let parakeetFailedNotification = Notification.Name("codictate.parakeet.failed")
+
+    private typealias Waiter = (
         onProgress: (Double) -> Void,
         onComplete: (Result<String, Error>) -> Void
     )
 
-    private var parakeetWaiters: [ParakeetWaiter] = []
-    private var parakeetDownloadInFlight = false
-    private var parakeetProgressObserver: NSObjectProtocol?
-    private var parakeetReadyObserver: NSObjectProtocol?
-    private var parakeetFailedObserver: NSObjectProtocol?
+    /// Keyed by `Variant.rawValue`. Main queue only, like the observers that drain it.
+    private var waiters: [String: [Waiter]] = [:]
+    private var requested: Set<String> = []
+    private var observersInstalled = false
 
     private init() {}
 
@@ -89,15 +167,18 @@ final class AppGroupModelManager {
     }
 
     func resetParakeetDownloadState() {
-        parakeetDownloadInFlight = false
-        parakeetWaiters = []
+        onMain {
+            self.requested.remove(Variant.parakeet.rawValue)
+            self.waiters.removeValue(forKey: Variant.parakeet.rawValue)
+            self.postDownloadState(variant: .parakeet, inFlight: false)
+        }
     }
 
     func modelFilePath(for variant: Variant) -> String? {
         switch variant {
         case .parakeet:
             return parakeetModelDirectory?.path
-        case .base, .baseEn:
+        case .base, .baseEn, .hviske:
             return containerURL?.appendingPathComponent(variant.filename).path
         }
     }
@@ -106,7 +187,7 @@ final class AppGroupModelManager {
         switch variant {
         case .parakeet:
             return parakeetModelIsReady()
-        case .base, .baseEn:
+        case .base, .baseEn, .hviske:
             guard let path = modelFilePath(for: variant) else { return false }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             let size = (attrs?[.size] as? Int64) ?? 0
@@ -114,32 +195,36 @@ final class AppGroupModelManager {
         }
     }
 
+    /// Asks the Host to make a Speech Model's weights present, and reports back on the
+    /// callbacks the Expo module turns into `onModelProgress` and a resolved promise.
+    ///
+    /// This module is a requester, never a downloader. It cannot own the background
+    /// URLSession: iOS relaunches a terminated app to finish a background download without
+    /// initialising React Native, so a session attached from `OnCreate` would never be
+    /// recreated on the one launch that exists to file the bytes. The Host attaches it from
+    /// `KeyboardHostRecorder.bootstrap()`, which runs on that launch. Parakeet already
+    /// worked this way for a different reason -- FluidAudio cannot be imported here -- and
+    /// both requests answer over the same shape.
     func ensureModel(
         variant: Variant,
         onProgress: @escaping (Double) -> Void,
         onComplete: @escaping (Result<String, Error>) -> Void
     ) {
-        if variant == .parakeet {
-            if parakeetModelIsReady(), let path = parakeetModelDirectory?.path {
-                onComplete(.success(path))
-                return
-            }
-
-            parakeetWaiters.append((onProgress, onComplete))
-            installParakeetObserversIfNeeded()
-
-            guard !parakeetDownloadInFlight else { return }
-            parakeetDownloadInFlight = true
-            onProgress(0)
-
-            NotificationCenter.default.post(
-                name: Notification.Name("codictate.parakeet.ensureModel"),
-                object: nil
-            )
-            return
+        // Expo calls this off the main queue; the waiter bookkeeping below and the
+        // observers that drain it are main-queue only.
+        onMain {
+            self.startEnsure(variant: variant, onProgress: onProgress, onComplete: onComplete)
         }
+    }
 
-        guard let container = containerURL else {
+    // MARK: - Private
+
+    private func startEnsure(
+        variant: Variant,
+        onProgress: @escaping (Double) -> Void,
+        onComplete: @escaping (Result<String, Error>) -> Void
+    ) {
+        if variant != .parakeet, containerURL == nil {
             onComplete(.failure(NSError(
                 domain: "AppGroupModelManager", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable."]
@@ -147,124 +232,141 @@ final class AppGroupModelManager {
             return
         }
 
-        let destURL = container.appendingPathComponent(variant.filename)
-
         if modelIsReady(for: variant), let path = modelFilePath(for: variant) {
             onComplete(.success(path))
             return
         }
 
-        if FileManager.default.fileExists(atPath: destURL.path) {
-            try? FileManager.default.removeItem(at: destURL)
+        installObserversIfNeeded()
+        waiters[variant.rawValue, default: []].append((onProgress, onComplete))
+
+        // The Host de-duplicates concurrent tasks for the same URL too; this stops a
+        // second tap from posting a second request at all.
+        guard !requested.contains(variant.rawValue) else { return }
+        requested.insert(variant.rawValue)
+        onProgress(0)
+
+        if variant == .parakeet {
+            // The Host's download coordinator posts in-flight state for the file-backed
+            // Speech Models. FluidAudio posts none, so the requester says it instead.
+            postDownloadState(variant: .parakeet, inFlight: true)
+            NotificationCenter.default.post(
+                name: Self.parakeetEnsureModelNotification,
+                object: nil
+            )
+            return
         }
 
-        onProgress(0)
-        let delegate = DownloadDelegate(
-            onProgress: onProgress,
-            onDone: { tempURL, error in
-                if let error { DispatchQueue.main.async { onComplete(.failure(error)) }; return }
-                guard let tempURL else {
-                    DispatchQueue.main.async {
-                        onComplete(.failure(NSError(
-                            domain: "AppGroupModelManager", code: 2,
-                            userInfo: [NSLocalizedDescriptionKey: "Download produced no file."]
-                        )))
-                    }
-                    return
-                }
-                do {
-                    if !FileManager.default.fileExists(atPath: container.path) {
-                        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
-                    }
-                    try FileManager.default.moveItem(at: tempURL, to: destURL)
-                    DispatchQueue.main.async { onComplete(.success(destURL.path)) }
-                } catch {
-                    DispatchQueue.main.async { onComplete(.failure(error)) }
-                }
-            }
+        NotificationCenter.default.post(
+            name: Self.ensureModelNotification,
+            object: nil,
+            userInfo: ["variant": variant.rawValue]
         )
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        let task = session.downloadTask(with: variant.url)
-        task.resume()
-        objc_setAssociatedObject(session, &AppGroupModelManager.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)
     }
 
-    private static var delegateKey: UInt8 = 0
+    /// Tells the Host's Dictation Readiness resolver that a download started or stopped.
+    /// Mirror of `ModelDownloadNotification.stateChanged`.
+    private func postDownloadState(variant: Variant, inFlight: Bool) {
+        NotificationCenter.default.post(
+            name: Self.downloadStateChangedNotification,
+            object: nil,
+            userInfo: ["variant": variant.rawValue, "inFlight": inFlight]
+        )
+    }
 
-    private func installParakeetObserversIfNeeded() {
-        guard parakeetProgressObserver == nil else { return }
+    private func installObserversIfNeeded() {
+        guard !observersInstalled else { return }
+        observersInstalled = true
 
-        parakeetProgressObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("codictate.parakeet.progress"),
+        NotificationCenter.default.addObserver(
+            forName: Self.progressNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard let self else { return }
-            let p = (note.userInfo?["progress"] as? Double) ?? 0
-            for waiter in self.parakeetWaiters {
-                waiter.onProgress(p)
-            }
+            guard let self,
+                  let raw = note.userInfo?["variant"] as? String,
+                  let variant = Variant(rawValue: raw) else { return }
+            self.deliverProgress(variant, (note.userInfo?["progress"] as? Double) ?? 0)
         }
 
-        parakeetReadyObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("codictate.parakeet.ready"),
+        NotificationCenter.default.addObserver(
+            forName: Self.readyNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?["variant"] as? String,
+                  let variant = Variant(rawValue: raw) else { return }
+            let path = (note.userInfo?["path"] as? String)
+                ?? self.modelFilePath(for: variant)
+                ?? ""
+            self.finish(variant, .success(path))
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: Self.failedNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?["variant"] as? String,
+                  let variant = Variant(rawValue: raw) else { return }
+            let message = (note.userInfo?["error"] as? String) ?? "Model download failed."
+            self.finish(variant, .failure(NSError(
+                domain: "AppGroupModelManager", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )))
+        }
+
+        // Parakeet answers on its own notification names: it is downloaded by FluidAudio
+        // inside `ParakeetModelManager`, not by the Host's URLSession, and carries no
+        // variant in its userInfo because it can only ever be about Parakeet.
+        NotificationCenter.default.addObserver(
+            forName: Self.parakeetProgressNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            self?.deliverProgress(.parakeet, (note.userInfo?["progress"] as? Double) ?? 0)
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: Self.parakeetReadyNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            let path = self.parakeetModelDirectory?.path ?? ""
-            self.finishParakeetDownload(.success(path))
+            self.postDownloadState(variant: .parakeet, inFlight: false)
+            self.finish(.parakeet, .success(self.parakeetModelDirectory?.path ?? ""))
         }
 
-        parakeetFailedObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("codictate.parakeet.failed"),
+        NotificationCenter.default.addObserver(
+            forName: Self.parakeetFailedNotification,
             object: nil, queue: .main
         ) { [weak self] note in
             guard let self else { return }
-            let msg = (note.userInfo?["error"] as? String) ?? "Parakeet model download failed."
-            self.finishParakeetDownload(.failure(NSError(
+            let message = (note.userInfo?["error"] as? String) ?? "Parakeet model download failed."
+            self.postDownloadState(variant: .parakeet, inFlight: false)
+            self.finish(.parakeet, .failure(NSError(
                 domain: "AppGroupModelManager", code: 3,
-                userInfo: [NSLocalizedDescriptionKey: msg]
+                userInfo: [NSLocalizedDescriptionKey: message]
             )))
         }
     }
 
-    private func finishParakeetDownload(_ result: Result<String, Error>) {
-        parakeetDownloadInFlight = false
-        let waiters = parakeetWaiters
-        parakeetWaiters = []
-        for waiter in waiters {
-            switch result {
-            case .success(let path):
-                waiter.onComplete(.success(path))
-            case .failure(let error):
-                waiter.onComplete(.failure(error))
-            }
+    private func deliverProgress(_ variant: Variant, _ fraction: Double) {
+        for waiter in waiters[variant.rawValue] ?? [] {
+            waiter.onProgress(fraction)
         }
     }
 
-    private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
-        let onProgress: (Double) -> Void
-        let onDone: (URL?, Error?) -> Void
-
-        init(onProgress: @escaping (Double) -> Void, onDone: @escaping (URL?, Error?) -> Void) {
-            self.onProgress = onProgress
-            self.onDone = onDone
+    private func finish(_ variant: Variant, _ result: Result<String, Error>) {
+        requested.remove(variant.rawValue)
+        let pending = waiters.removeValue(forKey: variant.rawValue) ?? []
+        for waiter in pending {
+            waiter.onComplete(result)
         }
+    }
 
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                        didWriteData _: Int64, totalBytesWritten: Int64,
-                        totalBytesExpectedToWrite expected: Int64) {
-            guard expected > 0 else { return }
-            DispatchQueue.main.async { self.onProgress(Double(totalBytesWritten) / Double(expected)) }
-        }
-
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                        didFinishDownloadingTo location: URL) {
-            // Move the file synchronously here; iOS deletes it once this method returns.
-            onDone(location, nil)
-        }
-
-        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            if let error { onDone(nil, error) }
+    private func onMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread {
+            work()
+        } else {
+            DispatchQueue.main.async(execute: work)
         }
     }
 }

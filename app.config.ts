@@ -2,6 +2,7 @@ import "tsx/cjs";
 import { ExpoConfig } from "expo/config";
 import withKeyboardExtension from "./plugins/withKeyboardExtension";
 import withFluidAudio from "./plugins/withFluidAudio";
+import withCrispASR from "./plugins/withCrispASR";
 
 const config: ExpoConfig = {
   name: "Codictate",
@@ -112,4 +113,9 @@ const config: ExpoConfig = {
   },
 };
 
-export default withFluidAudio(withKeyboardExtension(config));
+// Expo runs config-plugin mods in reverse registration order, so the innermost
+// wrapper here runs its mods last. withCrispASR must run after
+// withKeyboardExtension, which rewrites the app target's HEADER_SEARCH_PATHS and
+// FRAMEWORK_SEARCH_PATHS wholesale on every prebuild; withCrispASR appends the
+// crispasr entries to whatever it leaves behind.
+export default withFluidAudio(withKeyboardExtension(withCrispASR(config)));

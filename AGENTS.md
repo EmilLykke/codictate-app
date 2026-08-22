@@ -66,6 +66,9 @@ Whenever you add, remove, or modify a model variant, update all three:
 
 The `Variant` enum uses explicit rawValues so the JS-facing string matches (`parakeet = "parakeet"`, `base = "base"`).
 
+Download URLs live only in the main app target's copy: the Host performs every download,
+so the module's copy has no `url` to drift from.
+
 ## ParakeetModelManager -- cross-module download flow
 
 The Expo module cannot import FluidAudio directly. Model download is coordinated via NotificationCenter:
@@ -75,6 +78,28 @@ The Expo module cannot import FluidAudio directly. Model download is coordinated
 3. Progress posted via `codictate.parakeet.progress` (userInfo: `["progress": Double]`)
 4. Completion posted via `codictate.parakeet.ready` or `codictate.parakeet.failed`
 5. `AppGroupModelManager` listens for these and resolves the `ensureModel` callback
+
+## ModelManager -- cross-module download flow
+
+The file-backed Speech Models (`base`, `base_en`, `hviske`) use the same shape, for a
+different reason: **the Expo module must never own a background `URLSession`.** iOS
+relaunches a terminated app to finish a background download without initialising React
+Native, so a session attached from the module's `OnCreate` is never recreated on the one
+launch that exists to file the bytes. The Host owns the single session and the module is a
+requester:
+
+1. Expo module posts `codictate.model.ensureModel` (userInfo: `["variant": String]`)
+2. `ModelManager.installObserver()` (installed in `KeyboardHostRecorder.bootstrap()`) receives it and downloads on the one background session, `app.codictate.modeldownload.host`
+3. Progress posted via `codictate.model.progress` (userInfo: `["variant": String, "progress": Double]`)
+4. Completion posted via `codictate.model.ready` (`["variant", "path"]`) or `codictate.model.failed` (`["variant", "error"]`)
+5. `AppGroupModelManager` listens for these and resolves the `ensureModel` callback
+
+The module keeps everything that does not download and works with no Host code running:
+readiness (`modelIsReady`), paths, `listModels` and `deleteModel`. There is exactly one
+background session identifier in the process, declared as
+`BackgroundDownloadEvents.sessionIdentifier` and consumed by `ModelManager`; the
+AppDelegate hook injected by `plugins/withKeyboardExtension.ts` answers its completion
+handler.
 
 ## DictationActivityAttributes -- three files that must stay in sync
 
@@ -100,6 +125,16 @@ cp modules/codictate-dictation/index.ts node_modules/codictate-dictation/index.t
 ```
 
 Running `bun install` re-copies automatically, but won't happen mid-session.
+
+## Domain docs
+
+`CONTEXT.md` is the glossary for this app's domain terms (Dictation turn, Warm path, Speech
+Model, ASR Harness, Language Lock, Dictation Readiness). Use those terms in code and docs.
+Architectural decisions and their rejected alternatives live in `docs/adr/`:
+
+| ADR | Decision |
+|---|---|
+| `0001-crispasr-as-the-ios-asr-harness.md` | crispasr replaces `whisper.rn` as the ASR Harness, unlocking the Danish hviske Speech Model. FluidAudio keeps Parakeet |
 
 ## Linting / type checking
 

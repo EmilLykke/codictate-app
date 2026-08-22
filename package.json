@@ -7,8 +7,10 @@
     "reset-project": "node ./scripts/reset-project.js",
     "ios": "expo run:ios",
     "android": "expo run:android",
-    "prebuild:ios": "expo prebuild --platform ios",
-    "prebuild": "expo prebuild",
+    "fetch-crispasr": "tsx scripts/fetch-crispasr.ts",
+    "prebuild:ios": "bun run fetch-crispasr && expo prebuild --platform ios",
+    "prebuild": "bun run fetch-crispasr && expo prebuild",
+    "eas-build-post-install": "bun run fetch-crispasr",
     "eas:development": "dotenv -e .env -- eas build --profile development --platform ios --auto-submit",
     "eas:preview": "dotenv -e .env -- eas build --profile preview --platform ios --auto-submit",
     "eas:production": "dotenv -e .env -- eas build --profile production --platform ios --auto-submit",
@@ -52,8 +54,7 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
     "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.8.3",
-    "whisper.rn": "^0.5.5"
+    "react-native-worklets": "0.8.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

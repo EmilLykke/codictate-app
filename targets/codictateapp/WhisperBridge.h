@@ -2,10 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Thin Objective-C wrapper around the whisper.cpp C API.
-/// Exposes only what the keyboard extension needs: load a model, transcribe a
-/// WAV file, then free the model.  All heavy work runs on a serial background
-/// queue; the completion handler is called on the main queue.
+/// Thin Objective-C wrapper around the whisper C API that the crispasr ASR
+/// Harness exports.  Exposes only what the host app needs: load a model,
+/// transcribe a WAV file, then free the model.  All heavy work runs on a serial
+/// background queue; the completion handler is called on the main queue.
 @interface WhisperBridge : NSObject
 
 /// Returns YES if a model is currently loaded.

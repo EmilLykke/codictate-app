@@ -3,7 +3,9 @@ import { Link, type Href } from 'expo-router'
 import { Platform, Pressable, Text, View } from 'react-native'
 import { labelForTranscriptionLanguageId } from '@/constants/transcription-languages'
 import { appColors } from '@/constants/AppColors'
+import { resolveTranscriptionLanguageId } from '@/constants/speech-models'
 import { useTranscriptionLanguage } from '@/hooks/settings/transcription-language-context'
+import { useSharedModelManagement } from '@/hooks/whisper/model-management-context'
 import {
   SettingsHubActionButtonSection,
   SettingsHubKeyboardSection,
@@ -14,13 +16,25 @@ import {
   SettingsScroll,
   settingsStyles as styles,
 } from '@/components/Settings/settings-shared'
+import { DictationReadinessBanner } from '@/components/DictationReadinessBanner'
+import { useDictationReadiness } from '@/hooks/whisper/use-dictation-readiness'
 
 export function ScreenSettingsHub() {
   const isIos = Platform.OS === 'ios'
   const { languageId } = useTranscriptionLanguage()
+  const { preferredVariant } = useSharedModelManagement()
+  const readiness = useDictationReadiness()
+  // The row names the language that will actually run: a Locked Speech Model reads
+  // Auto-detect as its own language.
+  const effectiveLanguageId = resolveTranscriptionLanguageId(
+    preferredVariant,
+    languageId
+  )
 
   return (
     <SettingsScroll>
+      <DictationReadinessBanner readiness={readiness} />
+
       {isIos ? (
         <>
           <SettingsHubActionButtonSection />
@@ -37,7 +51,7 @@ export function ScreenSettingsHub() {
                 Language
               </Text>
               <Text style={styles.hubRowSubtitle} selectable>
-                {labelForTranscriptionLanguageId(languageId)}
+                {labelForTranscriptionLanguageId(effectiveLanguageId)}
               </Text>
             </View>
             <Image
@@ -75,7 +89,7 @@ export function ScreenSettingsHub() {
                 Open-source licenses
               </Text>
               <Text style={styles.hubRowSubtitle} selectable>
-                Whisper, Parakeet, FluidAudio
+                Whisper, Hviske, Parakeet, FluidAudio
               </Text>
             </View>
             <Image

@@ -11,10 +11,7 @@ import {
   type ModelInfo,
   type ModelVariant,
 } from 'codictate-dictation'
-import {
-  MODEL_LABELS,
-  MODEL_SIZE_MB,
-} from '@/components/Settings/settings-shared'
+import { speechModelLabel, speechModelSizeMb } from '@/constants/speech-models'
 
 export function useModelManagement() {
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -76,10 +73,10 @@ export function useModelManagement() {
 
   const confirmDownload = useCallback(
     (variant: ModelVariant) => {
-      const label = MODEL_LABELS[variant] ?? variant
+      const label = speechModelLabel(variant)
       Alert.alert(
         'Download model?',
-        `Download ${label} now? Requires Wi-Fi and ~${MODEL_SIZE_MB[variant] ?? '?'} MB.`,
+        `Download ${label} now? Requires Wi-Fi and ~${speechModelSizeMb(variant)} MB.`,
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Download', onPress: () => startDownload(variant) },
@@ -91,7 +88,7 @@ export function useModelManagement() {
 
   const confirmDelete = useCallback(
     (row: ModelInfo) => {
-      const label = MODEL_LABELS[row.variant] ?? row.variant
+      const label = speechModelLabel(row.variant)
       Alert.alert(
         'Delete model file?',
         `Remove ${label} from this device? It will download again when needed.`,

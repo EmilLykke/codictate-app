@@ -150,7 +150,9 @@ final class ParakeetEngine: TranscriptionEngine {
     private var asrManager: AsrManager?
     private var decoderState: TdtDecoderState?
 
-    func transcribe(wavPath: String) async throws -> String {
+    /// `languageId` is ignored: Parakeet TDT v3 takes no language input, which is
+    /// why its Language Lock pins it to automatic instead of to a code list.
+    func transcribe(wavPath: String, languageId: String) async throws -> String {
         try await loadIfNeeded()
         guard let asr = asrManager else {
             throw NSError(

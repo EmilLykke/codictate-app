@@ -1,5 +1,7 @@
 /**
- * Transcription languages for whisper.rn `transcribe({ language })`.
+ * The Transcription Languages the user can pick. `id` is what is stored in App
+ * Group UserDefaults under `transcriptionLanguageId`; the Host maps it to the
+ * code its ASR Harness wants, so nothing here is resolved in JS.
  * `whisperCode` matches whisper.cpp language ids.
  */
 const ENTRIES_UNSORTED: { id: string; label: string; whisperCode: string }[] = [
@@ -84,12 +86,6 @@ export function whisperCodeForTranscriptionId(id: string): string | null {
   if (code == null) return null
   const t = code.trim()
   return t.length > 0 ? t : null
-}
-
-/** Value for whisper.rn `transcribe({ language })` */
-export function transcribeLanguageOption(id: string): string {
-  if (id === 'auto') return 'auto'
-  return whisperCodeForTranscriptionId(id) ?? 'auto'
 }
 
 export const TRANSCRIPTION_LANGUAGE_HINT =

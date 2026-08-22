@@ -2,14 +2,18 @@ import { Image } from 'expo-image'
 import { Pressable, Text, View } from 'react-native'
 import { appColors } from '@/constants/AppColors'
 import {
-  MODEL_LABELS,
-  MODEL_META,
-  MODEL_DESCRIPTIONS,
   SectionCard,
   SettingsScroll,
   settingsStyles as styles,
 } from '@/components/Settings/settings-shared'
+import { DictationReadinessBanner } from '@/components/DictationReadinessBanner'
 import { IndeterminateProgressBar } from '@/components/IndeterminateProgressBar'
+import {
+  speechModelDescription,
+  speechModelLabel,
+  speechModelMeta,
+} from '@/constants/speech-models'
+import { useDictationReadiness } from '@/hooks/whisper/use-dictation-readiness'
 import { useSharedModelManagement } from '@/hooks/whisper/model-management-context'
 import type { useModelManagement } from '@/hooks/whisper/use-model-management'
 
@@ -28,11 +32,13 @@ export function ModelListContent({
     confirmDownload,
     confirmDelete,
   } = management
+  const readiness = useDictationReadiness()
 
   return (
     <>
+      <DictationReadinessBanner readiness={readiness} />
       {models.map((row) => {
-        const label = MODEL_LABELS[row.variant] ?? row.variant
+        const label = speechModelLabel(row.variant)
         const active = row.ready && preferredVariant === row.variant
         const progress = downloadProgress[row.variant]
         const isDownloading = progress !== undefined
@@ -41,10 +47,8 @@ export function ModelListContent({
           ? isParakeet
             ? 'Downloading…'
             : `Downloading… ${Math.round(progress * 100)}%`
-          : row.ready
-            ? `${MODEL_META[row.variant] ?? ''}`
-            : `${MODEL_META[row.variant] ?? ''}`
-        const description = MODEL_DESCRIPTIONS[row.variant]
+          : speechModelMeta(row.variant)
+        const description = speechModelDescription(row.variant)
 
         return (
           <View key={row.variant} style={styles.modelRow}>

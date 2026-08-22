@@ -10,6 +10,10 @@ enum KeyboardDictationBridge {
     static let suiteName = "group.app.codictate"
     /// In-app dictation + Action Button / Shortcut. Must match CodictateDictationModule.
     static let preferredVariantKey = "preferredModelVariant"
+    /// Transcription Language picker id, or "auto". JS writes, the Host reads.
+    static let transcriptionLanguageKey = "transcriptionLanguageId"
+    /// Dictation Readiness JSON published by the Host. The Host writes, JS reads.
+    static let dictationReadinessKey = "dictationReadiness"
     static let phaseKey = "kbdDictationPhase"
     static let wavFileKey = "kbdDictationWavFile"
     static let errorKey = "kbdDictationHostError"
@@ -58,28 +62,55 @@ enum DictationNotification {
     static let endKeyboardWarmSession = Notification.Name("codictate.dictation.endKeyboardWarmSession")
 }
 
-/// Selects between ParakeetEngine and WhisperEngine based on the user's
-/// preferred variant stored in the App Group UserDefaults.
+/// Selects between ParakeetEngine, WhisperEngine and CohereEngine based on the user's
+/// preferred Speech Model stored in the App Group UserDefaults.
 private final class TranscriptionRouter {
     static let shared = TranscriptionRouter()
     private let parakeet = ParakeetEngine()
     private let whisper = WhisperEngine()
+    private let cohere = CohereEngine()
 
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
         let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
+        let variant = ModelManager.Variant(rawValue: preferred) ?? .base
+        let storedLanguageId = suite.string(forKey: KeyboardDictationBridge.transcriptionLanguageKey)
+            ?? ModelManager.Variant.automaticLanguageId
+        // "auto" means the user expressed no preference, so a Speech Model with a pinned
+        // language runs that language. Resolved once, here, and handed to both the
+        // readiness check and the engine, so the verdict and the run cannot disagree.
+        let languageId = variant.resolvedLanguageId(storedLanguageId)
+
+        // Dictation Readiness is consulted before the turn starts, never after. A blocked
+        // state starts nothing and never silently switches to a different Speech Model.
+        // The recording paths gate on this too; this is the pre-spawn race check for a
+        // state that changed while the user was speaking.
+        let readiness = DictationReadiness.shared.resolve(variant: variant, languageId: languageId)
+        if readiness.blocked {
+            let message = readiness.message ?? "Dictation cannot start right now."
+            DispatchQueue.main.async {
+                DictationReadiness.shared.publish()
+                KeyboardHostRecorder.shared.fail(suite, message)
+                onComplete(nil)
+            }
+            return
+        }
+
         let engine: TranscriptionEngine
-        if preferred == "parakeet" {
+        switch variant.engine {
+        case .parakeet:
             engine = parakeet
-        } else {
-            whisper.activeVariant = ModelManager.Variant(rawValue: preferred) ?? .base
+        case .whisper:
+            whisper.activeVariant = variant
             engine = whisper
+        case .cohere:
+            engine = cohere
         }
 
         Task {
             do {
-                let text = try await engine.transcribe(wavPath: wavPath)
+                let text = try await engine.transcribe(wavPath: wavPath, languageId: languageId)
                 await MainActor.run {
                     guard !text.isEmpty else {
                         KeyboardHostRecorder.shared.fail(suite, "No speech detected.")
@@ -425,6 +456,15 @@ final class KeyboardHostRecorder: NSObject {
         ensureDefaultWarmDurationConfigured()
         installNotificationObservers()
         ParakeetModelManager.shared.installObserver()
+        // Before the session is attached: a download that finished while the app was
+        // away replays as soon as the session exists, and that replay must be observed.
+        BackgroundDownloadEvents.shared.installObserver()
+        // The Host owns every Speech Model download, including the ones React Native
+        // asks for, because this runs on a background relaunch and the Expo module's
+        // `OnCreate` does not.
+        ModelManager.shared.installObserver()
+        ModelManager.shared.activateBackgroundDownloads()
+        DictationReadiness.shared.installObservers()
         recoverStaleState()
         resumeKeyboardListenSessionIfNeeded()
     }
@@ -918,6 +958,16 @@ final class KeyboardHostRecorder: NSObject {
 
     private func startSessionInternal(suite: UserDefaults, source: String) {
         NSLog("[KeyboardHost] startSessionInternal source=\(source)")
+
+        // Dictation Readiness gates the turn before any recording begins. Blocked means
+        // blocked: no substitution, no fallback Speech Model.
+        let readiness = DictationReadiness.shared.publish()
+        if readiness.blocked {
+            NSLog("[KeyboardHost] Dictation blocked: \(readiness.reason?.rawValue ?? "unknown")")
+            fail(suite, readiness.message ?? "Dictation cannot start right now.")
+            return
+        }
+
         if source == KeyboardDictationBridge.sourceKeyboard,
            isKeyboardListenSessionRunning() {
             // Keyboard wrote phase=start; listen-session poll picks it up within ~250ms.

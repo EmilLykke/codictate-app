@@ -32,7 +32,31 @@ const licenses: LicenseEntry[] = [
     licenseType: 'MIT License',
     licenseUrl: 'https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE',
     projectUrl: 'https://github.com/ggerganov/whisper.cpp',
-    note: 'C/C++ port of OpenAI Whisper used for CPU-based inference.',
+    note:
+      'C/C++ port of OpenAI Whisper. Its ggml inference code runs the Whisper ' +
+      'speech models on device, linked through CrispASR.',
+  },
+  {
+    name: 'CrispASR',
+    copyright: 'Copyright (c) CrispStrobe',
+    licenseType: 'MIT License',
+    licenseUrl: 'https://github.com/CrispStrobe/CrispASR/blob/main/LICENSE',
+    projectUrl: 'https://github.com/CrispStrobe/CrispASR',
+    note:
+      'ggml speech recognition runtime, linked as an xcframework. It loads both ' +
+      'the Whisper and the Hviske speech models.',
+  },
+  {
+    name: 'hviske-v5-tiny',
+    copyright: 'Copyright syvai',
+    licenseType: 'CC BY-NC 4.0',
+    licenseUrl: 'https://creativecommons.org/licenses/by-nc/4.0/legalcode',
+    projectUrl: 'https://huggingface.co/syvai/hviske-v5-tiny',
+    note:
+      'Danish speech recognition weights by syvai, used for on-device Danish ' +
+      'dictation. Codictate downloads a GGUF conversion of the original weights ' +
+      'that it mirrors at huggingface.co/emillykkegrann/hviske-v5-tiny-GGUF. ' +
+      'Non-commercial use only.',
   },
   {
     name: 'NVIDIA Parakeet TDT v3',

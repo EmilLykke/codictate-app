@@ -30,15 +30,32 @@ export type StateChangeEvent = {
 export type TranscriptEvent = { transcript: string };
 export type ErrorEvent = { message: string };
 
-export type ModelVariant = "parakeet" | "base" | "base_en";
+export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
+
+/** Closed set. The Host produces the message for each one; JS only renders it. */
+export type DictationBlockedReason =
+  | "weightsMissing"
+  | "downloadInProgress"
+  | "languageUnsupportedByModel"
+  | "micPermissionMissing";
+
+/**
+ * Whether the current (Speech Model, Transcription Language, permissions)
+ * combination can start a Dictation turn. Computed in the Host, because keyboard
+ * and Action Button dictation run with no React Native process alive.
+ */
+export type DictationReadiness =
+  | { blocked: false; reason: null; message: null }
+  | { blocked: true; reason: DictationBlockedReason; message: string };
 
 type CodictateDictationEvents = {
   onStateChange: (event: StateChangeEvent) => void;
   onTranscript: (event: TranscriptEvent) => void;
   onError: (event: ErrorEvent) => void;
   onModelProgress: (event: ModelProgressEvent) => void;
+  "codictate.readiness.changed": (event: DictationReadiness) => void;
 };
 
 declare class CodictateDictationNativeModule extends NativeModule<CodictateDictationEvents> {
@@ -54,6 +71,9 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   listModels(): Promise<ModelInfo[]>;
   getPreferredModel(): Promise<ModelVariant>;
   setPreferredModel(variant: ModelVariant): Promise<void>;
+  getTranscriptionLanguageId(): string;
+  setTranscriptionLanguageId(id: string): void;
+  getDictationReadiness(): DictationReadiness;
   getKeyboardWarmDuration(): Promise<number>;
   setKeyboardWarmDuration(seconds: number): Promise<void>;
   isKeyboardWarmSessionActive(): Promise<boolean>;
@@ -134,7 +154,12 @@ export async function listModels(): Promise<ModelInfo[]> {
   return Native.listModels();
 }
 
-const KNOWN_VARIANTS: ModelVariant[] = ["parakeet", "base", "base_en"];
+const KNOWN_VARIANTS: ModelVariant[] = [
+  "parakeet",
+  "base",
+  "base_en",
+  "hviske",
+];
 
 export async function getPreferredModel(): Promise<ModelVariant> {
   const v = await Native.getPreferredModel();
@@ -145,6 +170,29 @@ export async function getPreferredModel(): Promise<ModelVariant> {
 
 export async function setPreferredModel(variant: ModelVariant): Promise<void> {
   return Native.setPreferredModel(variant);
+}
+
+/**
+ * The Transcription Language id, from `TRANSCRIPTION_LANGUAGE_OPTIONS` or "auto".
+ * Synchronous: it is a single App Group UserDefaults read, and the Host needs the
+ * same value with no JS process alive.
+ */
+export function getTranscriptionLanguageId(): string {
+  return Native.getTranscriptionLanguageId();
+}
+
+export function setTranscriptionLanguageId(id: string): void {
+  Native.setTranscriptionLanguageId(id);
+}
+
+export function getDictationReadiness(): DictationReadiness {
+  return Native.getDictationReadiness();
+}
+
+export function addDictationReadinessListener(
+  listener: (readiness: DictationReadiness) => void,
+): EventSubscription {
+  return Native.addListener("codictate.readiness.changed", listener);
 }
 
 export async function getKeyboardWarmDuration(): Promise<number> {
