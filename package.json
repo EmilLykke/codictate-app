@@ -19,6 +19,7 @@
     "eas:preview-local": "dotenv -e .env -- eas build --profile preview --platform ios --local",
     "eas:production-local": "dotenv -e .env -- eas build --profile production --platform ios --local",
     "eas:submit": "dotenv -e .env -- eas submit --platform ios",
+    "eas:release-local": "./scripts/release-ios.sh",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
