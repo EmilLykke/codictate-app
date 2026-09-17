@@ -68,3 +68,24 @@ export const CRISPASR_VENDOR_INCLUDE_DIR = `${CRISPASR_VENDOR_DIR}/include`;
 
 /** Written last by the fetch script, so an interrupted run re-downloads. */
 export const CRISPASR_VENDOR_VERSION_STAMP = `${CRISPASR_VENDOR_DIR}/.version`;
+
+// llama.cpp is a separate dynamic framework from crispasr. Both export ggml,
+// but Mach-O's two-level namespace keeps each framework's internal references
+// bound to its own image; S1-mini uses llama while ASR stays on crispasr.
+// b9999 is intentionally pinned instead of the newer b10470 used by the CLI
+// smoke harness: b10470's official xcframework dropped the iOS Simulator
+// slice, while Codictate and crispasr support both device and Simulator.
+export const LLAMA_VERSION = "b9999";
+export const LLAMA_XCFRAMEWORK_ARCHIVE: VendorArchive = {
+  asset: `llama-${LLAMA_VERSION}-xcframework.zip`,
+  sha256: "edc986f1e646d69fc331074a57b909082e9172c0bb09eef06ade6afdf4496c5a",
+};
+export const LLAMA_RELEASE_BASE = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_VERSION}`;
+export const LLAMA_XCFRAMEWORK_NAME = "llama.xcframework";
+export const LLAMA_IOS_SLICES = [
+  "ios-arm64",
+  "ios-arm64_x86_64-simulator",
+] as const;
+export const LLAMA_VENDOR_DIR = "vendors/llama";
+export const LLAMA_VENDOR_XCFRAMEWORK = `${LLAMA_VENDOR_DIR}/${LLAMA_XCFRAMEWORK_NAME}`;
+export const LLAMA_VENDOR_VERSION_STAMP = `${LLAMA_VENDOR_DIR}/.version`;

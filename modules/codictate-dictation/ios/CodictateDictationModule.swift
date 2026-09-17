@@ -21,8 +21,16 @@ public final class CodictateDictationModule: Module {
     /// and Action Button dictation run with no React Native process alive.
     private static let dictationReadinessKey = "dictationReadiness"
     private static let automaticLanguageId = "auto"
+    private static let formattingModelKey = "formattingModel"
+    private static let formattingStyleKey = "formattingStyle"
+    private static let formattingContextKey = "formattingContext"
+    private static let formattingModelVerifiedKey = "s1MiniModelVerified"
+    private static let formattingModelDownloadingKey = "s1MiniModelDownloading"
+    private static let formattingModelFilename = "s1-mini-q4_k_m.gguf"
+    private static let formattingModelByteCount: Int64 = 484_219_808
     private static let phaseKey = "kbdDictationPhase"
     private static let transcriptKey = "kbdTranscript"
+    private static let transcriptTimestampKey = "kbdTranscriptTimestamp"
     private static let errorKey = "kbdDictationHostError"
     private static let sourceKey = "kbdDictationSource"
     private static let keyboardVisibleKey = "kbdKeyboardVisible"
@@ -43,6 +51,13 @@ public final class CodictateDictationModule: Module {
     private static let transcriptReadyNotification = Notification.Name("codictate.dictation.transcriptReady")
     private static let failedNotification = Notification.Name("codictate.dictation.failed")
 
+    // Mirror of `FormattingModelNotification` in the Host.
+    private static let formattingEnsureNotification = Notification.Name("codictate.formatting.ensureModel")
+    private static let formattingProgressNotification = Notification.Name("codictate.formatting.progress")
+    private static let formattingReadyNotification = Notification.Name("codictate.formatting.ready")
+    private static let formattingFailedNotification = Notification.Name("codictate.formatting.failed")
+    private static let formattingSettingsChangedNotification = Notification.Name("codictate.formatting.settingsChanged")
+
     // Mirror of `DictationReadinessNotification`.
     private static let readinessChangedNotification = Notification.Name("codictate.readiness.changed")
     private static let readinessRecomputeNotification = Notification.Name("codictate.readiness.recompute")
@@ -53,11 +68,24 @@ public final class CodictateDictationModule: Module {
     private var transcriptObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
     private var readinessObserver: NSObjectProtocol?
+    private var formattingProgressObserver: NSObjectProtocol?
+    private var formattingReadyObserver: NSObjectProtocol?
+    private var formattingFailedObserver: NSObjectProtocol?
+    private var formattingEnsureRequested = false
+    private var formattingEnsureWaiters: [(Result<String, Error>) -> Void] = []
 
     public func definition() -> ModuleDefinition {
         Name("CodictateDictation")
 
-        Events("onStateChange", "onTranscript", "onError", "onModelProgress", Self.readinessEventName)
+        Events(
+            "onStateChange",
+            "onTranscript",
+            "onError",
+            "onModelProgress",
+            "onFormattingModelProgress",
+            "onFormattingModelStatus",
+            Self.readinessEventName
+        )
 
         OnCreate {
             self.installObservers()
@@ -108,7 +136,17 @@ public final class CodictateDictationModule: Module {
             guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return nil }
             let phase = suite.string(forKey: Self.phaseKey) ?? "idle"
             let source = suite.string(forKey: Self.sourceKey) ?? "host"
-            guard phase == "ready", let text = suite.string(forKey: Self.transcriptKey), !text.isEmpty else {
+            guard phase == "ready", let text = suite.string(forKey: Self.transcriptKey) else {
+                return nil
+            }
+            // Defensive recovery for results written by older Host builds. A valid
+            // filler-only cleanup is terminal and must not leave `ready` stuck.
+            guard !text.isEmpty else {
+                suite.set("idle", forKey: Self.phaseKey)
+                suite.removeObject(forKey: Self.transcriptKey)
+                suite.removeObject(forKey: Self.transcriptTimestampKey)
+                suite.removeObject(forKey: Self.errorKey)
+                suite.synchronize()
                 return nil
             }
             guard source == "host" else {
@@ -193,6 +231,88 @@ public final class CodictateDictationModule: Module {
 
         Function("getDictationReadiness") { () -> [String: Any?] in
             Self.readReadiness()
+        }
+
+        // MARK: - Transcript formatting
+
+        Function("getFormattingModel") { () -> String in
+            Self.readFormattingSetting(
+                key: Self.formattingModelKey,
+                allowed: ["off", "s1-mini"],
+                defaultValue: "off"
+            )
+        }
+
+        Function("setFormattingModel") { (value: String) -> Void in
+            Self.writeFormattingSetting(
+                value,
+                key: Self.formattingModelKey,
+                allowed: ["off", "s1-mini"],
+                defaultValue: "off"
+            )
+        }
+
+        Function("getFormattingStyle") { () -> String in
+            Self.readFormattingSetting(
+                key: Self.formattingStyleKey,
+                allowed: ["casual", "semi-casual", "semi-formal", "formal"],
+                defaultValue: "semi-formal"
+            )
+        }
+
+        Function("setFormattingStyle") { (value: String) -> Void in
+            Self.writeFormattingSetting(
+                value,
+                key: Self.formattingStyleKey,
+                allowed: ["casual", "semi-casual", "semi-formal", "formal"],
+                defaultValue: "semi-formal"
+            )
+        }
+
+        Function("getFormattingContext") { () -> String in
+            Self.readFormattingSetting(
+                key: Self.formattingContextKey,
+                allowed: ["general", "email"],
+                defaultValue: "general"
+            )
+        }
+
+        Function("setFormattingContext") { (value: String) -> Void in
+            Self.writeFormattingSetting(
+                value,
+                key: Self.formattingContextKey,
+                allowed: ["general", "email"],
+                defaultValue: "general"
+            )
+        }
+
+        AsyncFunction("isFormattingModelReady") { () -> Bool in
+            Self.formattingModelStatus()["ready"] as? Bool ?? false
+        }
+
+        AsyncFunction("getFormattingModelStatus") { () -> [String: Any?] in
+            Self.formattingModelStatus()
+        }
+
+        AsyncFunction("ensureFormattingModel") { () async throws -> String in
+            try await withCheckedThrowingContinuation { continuation in
+                self.startFormattingEnsure { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }
+
+        AsyncFunction("deleteFormattingModel") { () -> Void in
+            guard let suite = UserDefaults(suiteName: Self.appGroupID) else { return }
+            if let path = Self.formattingModelPath {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            suite.set(false, forKey: Self.formattingModelVerifiedKey)
+            if suite.string(forKey: Self.formattingModelKey) == "s1-mini" {
+                suite.set("off", forKey: Self.formattingModelKey)
+            }
+            suite.synchronize()
+            NotificationCenter.default.post(name: Self.formattingSettingsChangedNotification, object: nil)
         }
 
         // MARK: - Model management
@@ -342,6 +462,129 @@ public final class CodictateDictationModule: Module {
             let raw = (note.userInfo as? [String: Any]) ?? [:]
             self.sendEvent(Self.readinessEventName, Self.normalizeReadiness(raw))
         }
+
+        formattingProgressObserver = NotificationCenter.default.addObserver(
+            forName: Self.formattingProgressNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let progress = (note.userInfo?["progress"] as? Double) ?? 0
+            self?.sendEvent("onFormattingModelProgress", ["progress": progress])
+        }
+
+        formattingReadyObserver = NotificationCenter.default.addObserver(
+            forName: Self.formattingReadyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let path = (note.userInfo?["path"] as? String) ?? Self.formattingModelPath ?? ""
+            self.finishFormattingEnsure(.success(path))
+            self.sendEvent("onFormattingModelStatus", Self.formattingModelStatus())
+        }
+
+        formattingFailedObserver = NotificationCenter.default.addObserver(
+            forName: Self.formattingFailedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let message = (note.userInfo?["error"] as? String) ?? "S1-mini download failed."
+            self.finishFormattingEnsure(.failure(NSError(
+                domain: "CodictateFormattingModel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )))
+            var status = Self.formattingModelStatus()
+            status["error"] = message
+            self.sendEvent("onFormattingModelStatus", status)
+        }
+    }
+
+    // MARK: - Transcript formatting
+
+    private static var formattingModelPath: String? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent(formattingModelFilename).path
+    }
+
+    private static func formattingModelStatus() -> [String: Any?] {
+        let path = formattingModelPath
+        let size = path.flatMap {
+            (try? FileManager.default.attributesOfItem(atPath: $0)[.size]) as? Int64
+        } ?? 0
+        let verified = UserDefaults(suiteName: appGroupID)?
+            .bool(forKey: formattingModelVerifiedKey) == true
+        let ready = verified && size == formattingModelByteCount
+        let downloading = UserDefaults(suiteName: appGroupID)?
+            .bool(forKey: formattingModelDownloadingKey) == true
+        return [
+            "ready": ready,
+            "downloading": downloading,
+            "size": size,
+            "expectedSize": formattingModelByteCount,
+            "path": ready ? path : nil,
+        ]
+    }
+
+    private static func readFormattingSetting(
+        key: String,
+        allowed: Set<String>,
+        defaultValue: String
+    ) -> String {
+        guard let raw = UserDefaults(suiteName: appGroupID)?.string(forKey: key) else {
+            return defaultValue
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return allowed.contains(value) ? value : defaultValue
+    }
+
+    private static func writeFormattingSetting(
+        _ raw: String,
+        key: String,
+        allowed: Set<String>,
+        defaultValue: String
+    ) {
+        guard let suite = UserDefaults(suiteName: appGroupID) else { return }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        suite.set(allowed.contains(value) ? value : defaultValue, forKey: key)
+        suite.synchronize()
+        NotificationCenter.default.post(name: formattingSettingsChangedNotification, object: nil)
+    }
+
+    private func startFormattingEnsure(
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        DispatchQueue.main.async {
+            if Self.formattingModelStatus()["ready"] as? Bool == true,
+               let path = Self.formattingModelPath {
+                completion(.success(path))
+                return
+            }
+            guard Self.formattingModelPath != nil else {
+                completion(.failure(NSError(
+                    domain: "CodictateFormattingModel",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable."]
+                )))
+                return
+            }
+            self.formattingEnsureWaiters.append(completion)
+            guard !self.formattingEnsureRequested else { return }
+            self.formattingEnsureRequested = true
+            self.sendEvent("onFormattingModelProgress", ["progress": 0.0])
+            NotificationCenter.default.post(name: Self.formattingEnsureNotification, object: nil)
+        }
+    }
+
+    private func finishFormattingEnsure(_ result: Result<String, Error>) {
+        formattingEnsureRequested = false
+        let waiters = formattingEnsureWaiters
+        formattingEnsureWaiters.removeAll()
+        for waiter in waiters {
+            waiter(result)
+        }
     }
 
     // MARK: - Dictation Readiness
@@ -388,9 +631,20 @@ public final class CodictateDictationModule: Module {
         if let transcriptObserver { NotificationCenter.default.removeObserver(transcriptObserver) }
         if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
         if let readinessObserver { NotificationCenter.default.removeObserver(readinessObserver) }
+        if let formattingProgressObserver { NotificationCenter.default.removeObserver(formattingProgressObserver) }
+        if let formattingReadyObserver { NotificationCenter.default.removeObserver(formattingReadyObserver) }
+        if let formattingFailedObserver { NotificationCenter.default.removeObserver(formattingFailedObserver) }
         stateObserver = nil
         transcriptObserver = nil
         failureObserver = nil
         readinessObserver = nil
+        formattingProgressObserver = nil
+        formattingReadyObserver = nil
+        formattingFailedObserver = nil
+        finishFormattingEnsure(.failure(NSError(
+            domain: "CodictateFormattingModel",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Formatting model request was cancelled."]
+        )))
     }
 }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Cross-module NSNotification names for Speech Model downloads. String-based so the
@@ -255,6 +256,29 @@ final class ModelManager {
         }
     }
 
+    func ensureFormattingModel(
+        onProgress: @escaping (Double) -> Void,
+        onComplete: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard let destination = containerURL?.appendingPathComponent(FormattingConfiguration.filename) else {
+            onComplete(.failure(NSError(domain: "ModelManager", code: 20, userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable."])))
+            return
+        }
+        if FormattingManager.shared.modelIsReady {
+            onComplete(.success(destination.path))
+            return
+        }
+        UserDefaults(suiteName: groupID)?.set(false, forKey: FormattingConfiguration.verifiedKey)
+        onProgress(0)
+        downloader.download(
+            from: FormattingConfiguration.url,
+            onProgress: onProgress,
+            onComplete: { result in
+                onComplete(result.map(\.path))
+            }
+        )
+    }
+
     /// Default ensure (Base) — kept for backward compatibility with keyboard flow.
     func ensureModel(
         onProgress: @escaping (Double) -> Void,
@@ -354,16 +378,58 @@ final class ModelManager {
     private lazy var downloader = ModelDownloadCoordinator(
         identifier: BackgroundDownloadEvents.sessionIdentifier,
         destinationForURL: { [weak self] url in
-            guard let self, let variant = Variant.variant(forRemote: url) else { return nil }
+            guard let self else { return nil }
+            if url == FormattingConfiguration.url {
+                return self.containerURL?.appendingPathComponent(FormattingConfiguration.filename)
+            }
+            guard let variant = Variant.variant(forRemote: url) else { return nil }
             return self.containerURL?.appendingPathComponent(variant.filename)
         },
+        validateFile: { url, file in
+            guard url == FormattingConfiguration.url else { return nil }
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? Int64,
+                  size == FormattingConfiguration.byteCount else {
+                return NSError(domain: "ModelManager", code: 21, userInfo: [NSLocalizedDescriptionKey: "S1-mini download has the wrong size."])
+            }
+            guard Self.sha256(file) == FormattingConfiguration.sha256 else {
+                return NSError(domain: "ModelManager", code: 22, userInfo: [NSLocalizedDescriptionKey: "S1-mini download failed integrity verification."])
+            }
+            return nil
+        },
+        onFileStored: { url, _ in
+            guard url == FormattingConfiguration.url else { return }
+            UserDefaults(suiteName: self.groupID)?.set(true, forKey: FormattingConfiguration.verifiedKey)
+        },
         onInFlightChange: { url, inFlight in
+            if url == FormattingConfiguration.url {
+                let suite = UserDefaults(suiteName: self.groupID)
+                suite?.set(inFlight, forKey: FormattingConfiguration.downloadingKey)
+                suite?.synchronize()
+                return
+            }
             guard let variant = Variant.variant(forRemote: url) else { return }
             NotificationCenter.default.post(
                 name: ModelDownloadNotification.stateChanged,
                 object: nil,
                 userInfo: ["variant": variant.rawValue, "inFlight": inFlight]
             )
+        },
+        onCompleteResult: { url, result in
+            guard url == FormattingConfiguration.url else { return }
+            switch result {
+            case .success(let path):
+                NotificationCenter.default.post(
+                    name: FormattingModelNotification.ready,
+                    object: nil,
+                    userInfo: ["path": path.path]
+                )
+            case .failure(let error):
+                NotificationCenter.default.post(
+                    name: FormattingModelNotification.failed,
+                    object: nil,
+                    userInfo: ["error": error.localizedDescription]
+                )
+            }
         }
     )
 
@@ -398,8 +464,11 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
     /// captured dictionary because a background task outlives the process: after a
     /// relaunch there is no waiter left, but the bytes still need filing.
     private let destinationForURL: (URL) -> URL?
+    private let validateFile: (URL, URL) -> Error?
+    private let onFileStored: (URL, URL) -> Void
     /// Called on the main queue whenever a URL starts or stops downloading.
     private let onInFlightChange: (URL, Bool) -> Void
+    private let onCompleteResult: (URL, Result<URL, Error>) -> Void
 
     /// The background session identifier, kept so the AppDelegate's completion handler
     /// for this session can be answered by name.
@@ -414,11 +483,17 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
     init(
         identifier: String,
         destinationForURL: @escaping (URL) -> URL?,
-        onInFlightChange: @escaping (URL, Bool) -> Void
+        validateFile: @escaping (URL, URL) -> Error? = { _, _ in nil },
+        onFileStored: @escaping (URL, URL) -> Void = { _, _ in },
+        onInFlightChange: @escaping (URL, Bool) -> Void,
+        onCompleteResult: @escaping (URL, Result<URL, Error>) -> Void = { _, _ in }
     ) {
         self.identifier = identifier
         self.destinationForURL = destinationForURL
+        self.validateFile = validateFile
+        self.onFileStored = onFileStored
         self.onInFlightChange = onInFlightChange
+        self.onCompleteResult = onCompleteResult
         super.init()
 
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
@@ -515,6 +590,10 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
 
         // iOS deletes `location` as soon as this method returns, so move it here.
         do {
+            if let validationError = validateFile(url, location) {
+                finish(url, .failure(validationError))
+                return
+            }
             let directory = destination.deletingLastPathComponent()
             if !FileManager.default.fileExists(atPath: directory.path) {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -523,6 +602,7 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.moveItem(at: location, to: destination)
+            onFileStored(url, destination)
             finish(url, .success(destination))
         } catch {
             finish(url, .failure(error))
@@ -586,9 +666,26 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
         let pending = waiters.removeValue(forKey: url.absoluteString) ?? []
         lock.unlock()
 
-        guard !pending.isEmpty else { return }
         DispatchQueue.main.async {
+            self.onCompleteResult(url, result)
             for waiter in pending { waiter.onComplete(result) }
         }
+    }
+}
+
+private extension ModelManager {
+    static func sha256(_ url: URL) -> String? {
+        guard let stream = InputStream(url: url) else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var hash = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { return nil }
+            if count == 0 { break }
+            hash.update(data: Data(buffer[0..<count]))
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

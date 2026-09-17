@@ -159,6 +159,9 @@ const styles = StyleSheet.create({
     fontSize: appFontSize.body - 5,
     color: appColors.foreground,
   },
+  pickerLabel: {
+    flex: 1,
+  },
   rowValue: {
     fontFamily: appFontFamily.sans,
     fontSize: 15,

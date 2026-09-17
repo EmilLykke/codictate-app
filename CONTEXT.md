@@ -44,6 +44,13 @@ One set of ASR weights the user can select, together with its id, its download a
 declared capabilities. `parakeet`, `base`, `base_en` and `hviske` are Speech Models.
 _Avoid_: model variant, engine (a Speech Model is not the runtime that executes it).
 
+## Formatting Model
+
+The model the user selects to rewrite a transcript before delivery, such as S1-mini by
+Superwhisper. Distinct from the Speech Model, which recognises speech.
+On iOS, S1-mini always receives its `lists` structure control: it adds bullets when the
+content calls for a list and otherwise returns prose. Structure is not a user setting.
+
 ## ASR Harness
 
 The runtime library that loads a Speech Model's weights and produces a transcript.

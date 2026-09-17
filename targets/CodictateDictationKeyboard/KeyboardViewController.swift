@@ -397,9 +397,13 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 viewState = processingViewState(from: suite)
             case KbdSuite.phaseReady:
                 stopResultPolling()
-                if let text = suite.string(forKey: KbdSuite.transcriptKey), !text.isEmpty {
-                    textDocumentProxy.insertText(text)
-                    viewState = .result(text)
+                if let text = suite.string(forKey: KbdSuite.transcriptKey) {
+                    if !text.isEmpty {
+                        textDocumentProxy.insertText(text)
+                        viewState = .result(text)
+                    } else {
+                        viewState = .idle
+                    }
                     suite.set(KbdSuite.phaseIdle, forKey: KbdSuite.phaseKey)
                     suite.removeObject(forKey: KbdSuite.transcriptKey)
                     suite.removeObject(forKey: KbdSuite.transcriptTimestampKey)

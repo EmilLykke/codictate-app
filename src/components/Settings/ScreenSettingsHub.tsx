@@ -82,6 +82,27 @@ export function ScreenSettingsHub() {
           </Pressable>
         </Link>
 
+        {isIos ? (
+          <Link href={'/settings/formatting' as Href} asChild>
+            <Pressable style={styles.hubRow}>
+              <View style={styles.hubRowMain}>
+                <Text style={styles.hubRowTitle} selectable>
+                  Formatting
+                </Text>
+                <Text style={styles.hubRowSubtitle} selectable>
+                  Optional on-device English cleanup
+                </Text>
+              </View>
+              <Image
+                source="sf:chevron.right"
+                style={styles.chevron}
+                contentFit="contain"
+                tintColor={appColors.foregroundSubtle}
+              />
+            </Pressable>
+          </Link>
+        ) : null}
+
         <Link href={'/settings/licenses' as Href} asChild>
           <Pressable style={styles.hubRow}>
             <View style={styles.hubRowMain}>
@@ -89,7 +110,7 @@ export function ScreenSettingsHub() {
                 Open-source licenses
               </Text>
               <Text style={styles.hubRowSubtitle} selectable>
-                Whisper, Hviske, Parakeet, FluidAudio
+                Whisper, Hviske, Parakeet, S1-mini
               </Text>
             </View>
             <Image

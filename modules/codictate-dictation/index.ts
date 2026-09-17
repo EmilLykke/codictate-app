@@ -34,6 +34,23 @@ export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
+export type FormattingModel = "off" | "s1-mini";
+export type FormattingStyle =
+  | "casual"
+  | "semi-casual"
+  | "semi-formal"
+  | "formal";
+export type FormattingContext = "general" | "email";
+export type FormattingModelProgressEvent = { progress: number };
+export type FormattingModelStatus = {
+  ready: boolean;
+  downloading: boolean;
+  size: number;
+  expectedSize: number;
+  path: string | null;
+  error?: string;
+};
+
 /** Closed set. The Host produces the message for each one; JS only renders it. */
 export type DictationBlockedReason =
   | "weightsMissing"
@@ -55,6 +72,8 @@ type CodictateDictationEvents = {
   onTranscript: (event: TranscriptEvent) => void;
   onError: (event: ErrorEvent) => void;
   onModelProgress: (event: ModelProgressEvent) => void;
+  onFormattingModelProgress: (event: FormattingModelProgressEvent) => void;
+  onFormattingModelStatus: (event: FormattingModelStatus) => void;
   "codictate.readiness.changed": (event: DictationReadiness) => void;
 };
 
@@ -74,6 +93,16 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   getTranscriptionLanguageId(): string;
   setTranscriptionLanguageId(id: string): void;
   getDictationReadiness(): DictationReadiness;
+  getFormattingModel(): FormattingModel;
+  setFormattingModel(model: FormattingModel): void;
+  getFormattingStyle(): FormattingStyle;
+  setFormattingStyle(style: FormattingStyle): void;
+  getFormattingContext(): FormattingContext;
+  setFormattingContext(context: FormattingContext): void;
+  isFormattingModelReady(): Promise<boolean>;
+  ensureFormattingModel(): Promise<string>;
+  deleteFormattingModel(): Promise<void>;
+  getFormattingModelStatus(): Promise<FormattingModelStatus>;
   getKeyboardWarmDuration(): Promise<number>;
   setKeyboardWarmDuration(seconds: number): Promise<void>;
   isKeyboardWarmSessionActive(): Promise<boolean>;
@@ -130,6 +159,18 @@ export function onModelProgress(
   listener: (event: ModelProgressEvent) => void,
 ): EventSubscription {
   return Native.addListener("onModelProgress", listener);
+}
+
+export function onFormattingModelProgress(
+  listener: (event: FormattingModelProgressEvent) => void,
+): EventSubscription {
+  return Native.addListener("onFormattingModelProgress", listener);
+}
+
+export function onFormattingModelStatus(
+  listener: (event: FormattingModelStatus) => void,
+): EventSubscription {
+  return Native.addListener("onFormattingModelStatus", listener);
 }
 
 export async function isModelReady(
@@ -193,6 +234,46 @@ export function addDictationReadinessListener(
   listener: (readiness: DictationReadiness) => void,
 ): EventSubscription {
   return Native.addListener("codictate.readiness.changed", listener);
+}
+
+export function getFormattingModel(): FormattingModel {
+  return Native.getFormattingModel();
+}
+
+export function setFormattingModel(model: FormattingModel): void {
+  Native.setFormattingModel(model);
+}
+
+export function getFormattingStyle(): FormattingStyle {
+  return Native.getFormattingStyle();
+}
+
+export function setFormattingStyle(style: FormattingStyle): void {
+  Native.setFormattingStyle(style);
+}
+
+export function getFormattingContext(): FormattingContext {
+  return Native.getFormattingContext();
+}
+
+export function setFormattingContext(context: FormattingContext): void {
+  Native.setFormattingContext(context);
+}
+
+export async function isFormattingModelReady(): Promise<boolean> {
+  return Native.isFormattingModelReady();
+}
+
+export async function ensureFormattingModel(): Promise<string> {
+  return Native.ensureFormattingModel();
+}
+
+export async function deleteFormattingModel(): Promise<void> {
+  return Native.deleteFormattingModel();
+}
+
+export async function getFormattingModelStatus(): Promise<FormattingModelStatus> {
+  return Native.getFormattingModelStatus();
 }
 
 export async function getKeyboardWarmDuration(): Promise<number> {

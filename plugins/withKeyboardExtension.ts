@@ -613,6 +613,12 @@ function syncKeyboardExtensionAndWireHostTranscription(
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
+      `${appTargetName}/S1MiniBridge.mm`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
       `${appTargetName}/WavPCMReader.mm`,
       hostSourceGroup,
       appUuid,
@@ -620,6 +626,12 @@ function syncKeyboardExtensionAndWireHostTranscription(
     ensureSourceFileBuiltByMainAppTarget(
       project,
       `${appTargetName}/ModelManager.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/FormattingManager.swift`,
       hostSourceGroup,
       appUuid,
     );
@@ -808,7 +820,11 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       if (fs.existsSync(expoBridgingPath)) {
         let bridging = fs.readFileSync(expoBridgingPath, "utf8");
         // Obj-C++ bridges only. WavPCMReader.h is C++ and must never land here.
-        for (const header of ["WhisperBridge.h", "CohereBridge.h"]) {
+        for (const header of [
+          "WhisperBridge.h",
+          "CohereBridge.h",
+          "S1MiniBridge.h",
+        ]) {
           if (bridging.includes(header)) continue;
           bridging = `${bridging.trimEnd()}\n\n#import "${header}"\n`;
           console.log(

@@ -110,11 +110,48 @@ private final class TranscriptionRouter {
 
         Task {
             do {
-                let text = try await engine.transcribe(wavPath: wavPath, languageId: languageId)
+                let rawText = try await engine.transcribe(wavPath: wavPath, languageId: languageId)
                 await MainActor.run {
-                    guard !text.isEmpty else {
+                    guard !rawText.isEmpty else {
                         KeyboardHostRecorder.shared.fail(suite, "No speech detected.")
                         onComplete(nil)
+                        return
+                    }
+                }
+                guard !rawText.isEmpty else { return }
+                let text = await FormattingManager.shared.formatIfEligible(
+                    rawText,
+                    languageId: languageId,
+                    suite: suite
+                )
+                await MainActor.run {
+                    // S1-mini may intentionally remove a filler-only transcript. That is
+                    // a successful turn with no output: leave no consumable result and do
+                    // not post transcriptReady (or let the Intent fallback clear clipboard).
+                    guard !text.isEmpty else {
+                        suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+                        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+                        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
+                        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+                        suite.removeObject(forKey: KeyboardDictationBridge.processingMessageKey)
+                        suite.synchronize()
+                        KeyboardHostRecorder.reloadControlWidget()
+                        KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
+                            source,
+                            transcript: "",
+                            suite: suite
+                        )
+                        if #available(iOS 16.2, *),
+                           source != KeyboardDictationBridge.sourceKeyboard {
+                            DictationLiveActivityManager.shared.end()
+                        }
+                        NotificationCenter.default.post(
+                            name: DictationNotification.stateChanged,
+                            object: nil,
+                            userInfo: ["phase": KeyboardDictationBridge.phaseIdle]
+                        )
+                        NSLog("[KeyboardHost] Formatting completed with no output")
+                        onComplete("")
                         return
                     }
                     suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
@@ -463,6 +500,7 @@ final class KeyboardHostRecorder: NSObject {
         // asks for, because this runs on a background relaunch and the Expo module's
         // `OnCreate` does not.
         ModelManager.shared.installObserver()
+        FormattingManager.shared.installObserver()
         ModelManager.shared.activateBackgroundDownloads()
         DictationReadiness.shared.installObservers()
         recoverStaleState()
@@ -1430,6 +1468,9 @@ final class KeyboardHostRecorder: NSObject {
         if #available(iOS 16.2, *) {
             DictationLiveActivityManager.shared.end()
         }
+
+        // Empty is a valid formatter result, but never content to copy.
+        guard !transcript.isEmpty else { return }
 
         let fallback = DispatchWorkItem { [weak self, weak suite] in
             guard let self, let suite else { return }

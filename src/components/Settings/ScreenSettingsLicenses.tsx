@@ -77,6 +77,26 @@ const licenses: LicenseEntry[] = [
     projectUrl: 'https://github.com/FluidInference/FluidAudio',
     note: 'Swift SDK for running Parakeet inference on the Apple Neural Engine.',
   },
+  {
+    name: 'S1-mini by Superwhisper',
+    copyright: 'Copyright 2026 Superwhisper',
+    licenseType: 'Apache License 2.0 + naming term',
+    licenseUrl:
+      'https://huggingface.co/superwhisper/s1-mini-GGUF/blob/main/LICENSE',
+    projectUrl: 'https://huggingface.co/superwhisper/s1-mini-GGUF',
+    note:
+      'English text-normalization model used for optional on-device transcript ' +
+      'formatting. Distributed under Apache 2.0 with an additional requirement ' +
+      'to retain the name “S1-mini” by “Superwhisper”.',
+  },
+  {
+    name: 'llama.cpp',
+    copyright: 'Copyright (c) 2023-2026 The ggml authors',
+    licenseType: 'MIT License',
+    licenseUrl: 'https://github.com/ggml-org/llama.cpp/blob/master/LICENSE',
+    projectUrl: 'https://github.com/ggml-org/llama.cpp',
+    note: 'On-device inference runtime used to run S1-mini.',
+  },
 ]
 
 const mitLicenseBody = `Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:

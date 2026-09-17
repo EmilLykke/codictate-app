@@ -3,6 +3,7 @@ import { ExpoConfig } from "expo/config";
 import withKeyboardExtension from "./plugins/withKeyboardExtension";
 import withFluidAudio from "./plugins/withFluidAudio";
 import withCrispASR from "./plugins/withCrispASR";
+import withLlama from "./plugins/withLlama";
 
 const config: ExpoConfig = {
   name: "Codictate",
@@ -118,4 +119,6 @@ const config: ExpoConfig = {
 // withKeyboardExtension, which rewrites the app target's HEADER_SEARCH_PATHS and
 // FRAMEWORK_SEARCH_PATHS wholesale on every prebuild; withCrispASR appends the
 // crispasr entries to whatever it leaves behind.
-export default withFluidAudio(withKeyboardExtension(withCrispASR(config)));
+export default withFluidAudio(
+  withKeyboardExtension(withCrispASR(withLlama(config))),
+);
