@@ -12,8 +12,29 @@ type LicenseEntry = {
   licenseType: string
   licenseUrl: string
   projectUrl: string
+  /** Upstream NOTICE file, when the license requires one to be carried. */
+  noticeUrl?: string
+  /**
+   * Verbatim upstream NOTICE text. Apache 2.0 section 4(d) lets a derivative
+   * work carry these attributions in a display it generates, which is the path
+   * this app takes: the built .ipa ships no NOTICE file, so this screen is
+   * where the notice has to be readable.
+   */
+  noticeBody?: string
   note?: string
 }
+
+const s1MiniNoticeBody = `S1-mini-GGUF
+Copyright 2026 Superwhisper
+
+GGUF conversions of S1-mini, which is itself a derivative of Qwen3-0.6B,
+Copyright 2024 Alibaba Cloud, licensed under the Apache License, Version 2.0.
+
+Any use, distribution, or integration of this model, whether unmodified or
+as part of a derivative work or product, must continue to identify it by its
+original name, "S1-mini" by "Superwhisper", using that exact capitalization.
+This restates the ADDITIONAL TERM of the LICENSE file, which is the
+operative text.`
 
 const licenses: LicenseEntry[] = [
   {
@@ -84,6 +105,9 @@ const licenses: LicenseEntry[] = [
     licenseUrl:
       'https://huggingface.co/superwhisper/s1-mini-GGUF/blob/main/LICENSE',
     projectUrl: 'https://huggingface.co/superwhisper/s1-mini-GGUF',
+    noticeUrl:
+      'https://huggingface.co/superwhisper/s1-mini-GGUF/blob/main/NOTICE',
+    noticeBody: s1MiniNoticeBody,
     note:
       'English text-normalization model used for optional on-device transcript ' +
       'formatting. Distributed under Apache 2.0 with an additional requirement ' +
@@ -129,10 +153,22 @@ export function ScreenSettingsLicenses() {
             <Pressable onPress={() => Linking.openURL(entry.projectUrl)}>
               <Text style={styles.link}>Project</Text>
             </Pressable>
+            {entry.noticeUrl ? (
+              <>
+                <Text style={styles.separator}>|</Text>
+                <Pressable onPress={() => Linking.openURL(entry.noticeUrl!)}>
+                  <Text style={styles.link}>NOTICE</Text>
+                </Pressable>
+              </>
+            ) : null}
           </View>
 
           {entry.licenseType === 'MIT License' ? (
             <Text style={styles.licenseBody}>{mitLicenseBody}</Text>
+          ) : null}
+
+          {entry.noticeBody ? (
+            <Text style={styles.licenseBody}>{entry.noticeBody}</Text>
           ) : null}
         </SectionCard>
       ))}

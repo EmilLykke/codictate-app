@@ -1,0 +1,9 @@
+Codictate for iOS
+Copyright 2026 Emil Lykke Grann
+
+Optional transcript cleanup uses S1-mini by Superwhisper.
+The model's license and attribution notices are distributed in
+third-party/s1-mini and are shown in the app under Settings > Licenses.
+
+On-device inference for S1-mini uses llama.cpp, Copyright (c) 2023-2026 The
+ggml authors, MIT License, distributed in third-party/llama.cpp.
