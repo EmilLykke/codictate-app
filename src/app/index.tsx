@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics'
 import {
   Alert,
   KeyboardAvoidingView,
+  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -30,6 +31,8 @@ import { WarmSessionBanner } from '@/components/Dictation/WarmSessionBanner'
 import { DictationReadinessBanner } from '@/components/DictationReadinessBanner'
 import { useDictationReadiness } from '@/hooks/whisper/use-dictation-readiness'
 import { ModelLanguageChips } from '@/components/Dictation/ModelLanguageChips'
+import { FormattingBar } from '@/components/Dictation/FormattingBar'
+import { useFormattingSettings } from '@/hooks/settings/use-formatting-settings'
 import { ModelSwitcherSheet } from '@/components/Dictation/ModelSwitcherSheet'
 import { LanguageSwitcherSheet } from '@/components/Dictation/LanguageSwitcherSheet'
 import { TRANSCRIPT_AREA_HEIGHT } from '@/constants/dictation-layout'
@@ -71,6 +74,9 @@ function DictationScreen() {
   const warmSession = useWarmSession()
   const modelMgmt = useSharedModelManagement()
   const readiness = useDictationReadiness()
+  // Formatting lives on the home screen too, so the chip and the sheet share
+  // one hook instance and stay in step.
+  const formatting = useFormattingSettings()
   const { dictState, transcript, dictError, start, stop, clear } =
     useRealtimeDictation()
   const [draft, setDraft] = useState('')
@@ -150,6 +156,8 @@ function DictationScreen() {
             onClearPress={() => void handleClearDraft()}
           />
         </View>
+
+        {Platform.OS === 'ios' ? <FormattingBar settings={formatting} /> : null}
 
         <View style={styles.spacer} />
 
@@ -282,7 +290,10 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   transcriptSlot: {
+    // Fixed height on roomy phones; shrinks rather than overflowing on short ones.
     height: TRANSCRIPT_AREA_HEIGHT,
+    flexShrink: 1,
+    minHeight: 180,
     width: '100%',
     maxWidth: 368,
     alignSelf: 'center',

@@ -255,6 +255,56 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: appColors.foreground,
   },
+  tileGroup: {
+    gap: 8,
+  },
+  tile: {
+    borderRadius: 14,
+    borderCurve: 'continuous',
+    padding: 12,
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  tileActive: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.28)',
+  },
+  tileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tileHeaderMain: {
+    flex: 1,
+    gap: 2,
+  },
+  tileLabel: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 16,
+    fontWeight: '600',
+    color: appColors.foreground,
+  },
+  tileDescription: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: appColors.foregroundMuted,
+  },
+  tilePreviewWrap: {
+    borderRadius: 10,
+    borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  tilePreview: {
+    fontFamily: appFontFamily.sans,
+    fontSize: 13,
+    lineHeight: 19,
+    color: 'rgba(255,255,255,0.72)',
+  },
   progressTrack: {
     height: 3,
     borderRadius: 2,

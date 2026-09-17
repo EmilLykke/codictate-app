@@ -31,7 +31,7 @@ export function TranscriptCard({ transcript, onClear }: TranscriptCardProps) {
     <View style={styles.outer}>
       <View style={styles.card}>
         <Text style={styles.clipboardHint} selectable>
-          Copied to clipboard — paste anywhere (e.g. Notes or Messages).
+          Copied to clipboard. Paste anywhere (e.g. Notes or Messages).
         </Text>
         <ScrollView
           style={styles.transcriptScroll}

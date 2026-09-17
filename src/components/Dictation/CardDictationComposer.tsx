@@ -13,7 +13,6 @@ import type {
   TextInputSelectionChangeEventData,
 } from 'react-native'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
-import { TRANSCRIPT_AREA_HEIGHT } from '@/constants/dictation-layout'
 
 const INPUT_ACCESSORY_ID = 'dictation-composer'
 
@@ -136,7 +135,7 @@ export type { TextSelection }
 
 const styles = StyleSheet.create({
   card: {
-    height: TRANSCRIPT_AREA_HEIGHT,
+    flex: 1,
     width: '100%',
     maxWidth: 368,
     alignSelf: 'center',

@@ -450,7 +450,7 @@ final class KeyboardHostRecorder: NSObject {
     private static let minWarmSessionSeconds: TimeInterval = 30
     private static let maxWarmSessionSeconds: TimeInterval = 1800
     private static let firstUseParakeetKeyboardMessage =
-        "Transcribing — first use may take a minute..."
+        "Transcribing. First use may take a minute..."
     private static let firstUseParakeetLiveActivityMessage =
         "First use may take a minute"
     /// Short background task fallback in case the warm microphone session cannot start.
