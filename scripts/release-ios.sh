@@ -49,7 +49,20 @@ fi
 echo "Marketing version $APP_VERSION. Must match the App Store Connect version page you intend to submit to."
 
 mkdir -p build
-rm -f "$IPA_PATH"
+
+# SKIP_BUILD=1 submits an IPA that is already on disk, for when the build
+# succeeded but a later step failed. The version and HEAD checks below still
+# run, so a stale artifact cannot slip through unnoticed.
+SKIP_BUILD="${SKIP_BUILD:-}"
+if [[ -n "$SKIP_BUILD" ]]; then
+  if [[ ! -f "$IPA_PATH" ]]; then
+    echo "SKIP_BUILD is set but $IPA_PATH does not exist. Run without SKIP_BUILD to build it." >&2
+    exit 1
+  fi
+  echo "SKIP_BUILD set: submitting the existing $IPA_PATH without rebuilding."
+else
+  rm -f "$IPA_PATH"
+fi
 
 # One question is left that no environment variable can answer. eas-cli asks it
 # with a plain confirm prompt and always gets the same reply, so expect sends it:
@@ -63,22 +76,24 @@ rm -f "$IPA_PATH"
 # did not take. It only warns rather than answering, because guessing here can
 # ship under the wrong provider and a long build is too expensive to lose to a
 # hard exit. Pick the provider by hand, then fix the variable.
-expect -c '
-  set timeout -1
-  spawn bunx eas build --profile '"$PROFILE"' --platform ios --local --output '"$IPA_PATH"'
-  catch {
-    interact {
-      -o -nobuffer "log in to your Apple account?" { send "\r"; return }
-    }
-    interact {
-      -o -nobuffer "Select a Provider" {
-        send_user "\n>>> EXPO_APPLE_PROVIDER_ID was ignored. Choose Emil Lykke Grann (128767488) by hand, then fix scripts/release-ios.sh.\n"
+if [[ -z "$SKIP_BUILD" ]]; then
+  expect -c '
+    set timeout -1
+    spawn bunx eas build --profile '"$PROFILE"' --platform ios --local --output '"$IPA_PATH"'
+    catch {
+      interact {
+        -o -nobuffer "log in to your Apple account?" { send "\r"; return }
+      }
+      interact {
+        -o -nobuffer "Select a Provider" {
+          send_user "\n>>> EXPO_APPLE_PROVIDER_ID was ignored. Choose Emil Lykke Grann (128767488) by hand, then fix scripts/release-ios.sh.\n"
+        }
       }
     }
-  }
-  catch wait result
-  exit [lindex $result 3]
-'
+    catch wait result
+    exit [lindex $result 3]
+  '
+fi
 
 if [[ "$(git rev-parse HEAD)" != "$START_SHA" ]]; then
   echo "HEAD moved during the build. The IPA snapshot is stale; re-run to rebuild from the new commit." >&2
@@ -90,9 +105,14 @@ if [[ ! -f "$IPA_PATH" ]]; then
   exit 1
 fi
 
-IPA_PLIST="$(unzip -p "$IPA_PATH" "Payload/*.app/Info.plist")"
-BUILD_NUM="$(plutil -extract CFBundleVersion raw -o - - <<<"$IPA_PLIST")"
-IPA_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - - <<<"$IPA_PLIST")"
+# Info.plist inside an IPA is a BINARY plist. Piping it through $(...) strips
+# the NUL bytes and plutil then rejects the result ("Unexpected character b"),
+# so unzip it to a file and let plutil read the file.
+IPA_PLIST="$(mktemp -t codictate-info-plist)"
+trap 'rm -f "$IPA_PLIST"' EXIT
+unzip -p "$IPA_PATH" "Payload/*.app/Info.plist" > "$IPA_PLIST"
+BUILD_NUM="$(plutil -extract CFBundleVersion raw -o - "$IPA_PLIST")"
+IPA_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$IPA_PLIST")"
 
 # Read from the IPA rather than trusting the config: prebuild only regenerates
 # ios/ when it runs, so a stale native project can ship a version string the
