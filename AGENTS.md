@@ -128,7 +128,7 @@ Running `bun install` re-copies automatically, but won't happen mid-session.
 
 ## Domain docs
 
-`CONTEXT.md` is the glossary for this app's domain terms (Dictation turn, Warm path, Speech
+`GLOSSARY.md` is the glossary for this app's domain terms (Dictation turn, Warm path, Speech
 Model, ASR Harness, Language Lock, Dictation Readiness). Use those terms in code and docs.
 Architectural decisions and their rejected alternatives live in `docs/adr/`:
 
