@@ -8,7 +8,7 @@ import withLlama from "./plugins/withLlama";
 const config: ExpoConfig = {
   name: "Codictate",
   slug: "codictate",
-  version: "1.0.2",
+  version: "1.0.3",
   orientation: "portrait",
   icon: "./assets/icon.iconset/icon_512x512@2x.png",
   scheme: "codictateapp",
