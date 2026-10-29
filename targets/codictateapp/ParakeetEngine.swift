@@ -74,9 +74,12 @@ final class ParakeetModelManager {
     private(set) var isPreparing = false
 
     /// Publishes whether the app should show "Preparing Parakeet". Main thread only.
+    /// A redundant `true` is skipped; `false` always publishes, so a stale `true`
+    /// is always cleared.
     func setPreparing(_ preparing: Bool) {
-        guard preparing != isPreparing else { return }
+        guard !preparing || !isPreparing else { return }
         isPreparing = preparing
+        NSLog("[ParakeetModelManager] preparing=\(preparing)")
         let suite = UserDefaults(suiteName: "group.app.codictate")
         suite?.set(preparing, forKey: Self.preparingKey)
         suite?.synchronize()

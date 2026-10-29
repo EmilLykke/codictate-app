@@ -12,6 +12,8 @@ export function useParakeetPreparing(): boolean {
 
   useEffect(() => {
     const sub = onParakeetPreparing((event) => setPreparing(event.preparing))
+    // An event sent between render and subscribe is lost, so re-read now.
+    setPreparing(isParakeetPreparing())
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (next === 'active') setPreparing(isParakeetPreparing())
     })
