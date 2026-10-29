@@ -64,10 +64,15 @@ public final class CodictateDictationModule: Module {
     /// The JS event name is the same literal as the notification name, on purpose.
     private static let readinessEventName = "codictate.readiness.changed"
 
+    // Mirror of `ParakeetModelNotification.preparing` and its App Group key.
+    private static let parakeetPreparingNotification = Notification.Name("codictate.parakeet.preparing")
+    private static let parakeetPreparingKey = "parakeetPreparing"
+
     private var stateObserver: NSObjectProtocol?
     private var transcriptObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
     private var readinessObserver: NSObjectProtocol?
+    private var parakeetPreparingObserver: NSObjectProtocol?
     private var formattingProgressObserver: NSObjectProtocol?
     private var formattingReadyObserver: NSObjectProtocol?
     private var formattingFailedObserver: NSObjectProtocol?
@@ -84,6 +89,7 @@ public final class CodictateDictationModule: Module {
             "onModelProgress",
             "onFormattingModelProgress",
             "onFormattingModelStatus",
+            "onParakeetPreparing",
             Self.readinessEventName
         )
 
@@ -231,6 +237,12 @@ public final class CodictateDictationModule: Module {
 
         Function("getDictationReadiness") { () -> [String: Any?] in
             Self.readReadiness()
+        }
+
+        /// True while the Host prepares Parakeet after an app update and the load has
+        /// run long enough to show. The Host writes, JS reads.
+        Function("isParakeetPreparing") { () -> Bool in
+            UserDefaults(suiteName: Self.appGroupID)?.bool(forKey: Self.parakeetPreparingKey) ?? false
         }
 
         // MARK: - Transcript formatting
@@ -463,6 +475,15 @@ public final class CodictateDictationModule: Module {
             self.sendEvent(Self.readinessEventName, Self.normalizeReadiness(raw))
         }
 
+        parakeetPreparingObserver = NotificationCenter.default.addObserver(
+            forName: Self.parakeetPreparingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let preparing = (note.userInfo?["preparing"] as? Bool) ?? false
+            self?.sendEvent("onParakeetPreparing", ["preparing": preparing])
+        }
+
         formattingProgressObserver = NotificationCenter.default.addObserver(
             forName: Self.formattingProgressNotification,
             object: nil,
@@ -631,6 +652,7 @@ public final class CodictateDictationModule: Module {
         if let transcriptObserver { NotificationCenter.default.removeObserver(transcriptObserver) }
         if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
         if let readinessObserver { NotificationCenter.default.removeObserver(readinessObserver) }
+        if let parakeetPreparingObserver { NotificationCenter.default.removeObserver(parakeetPreparingObserver) }
         if let formattingProgressObserver { NotificationCenter.default.removeObserver(formattingProgressObserver) }
         if let formattingReadyObserver { NotificationCenter.default.removeObserver(formattingReadyObserver) }
         if let formattingFailedObserver { NotificationCenter.default.removeObserver(formattingFailedObserver) }
@@ -638,6 +660,7 @@ public final class CodictateDictationModule: Module {
         transcriptObserver = nil
         failureObserver = nil
         readinessObserver = nil
+        parakeetPreparingObserver = nil
         formattingProgressObserver = nil
         formattingReadyObserver = nil
         formattingFailedObserver = nil

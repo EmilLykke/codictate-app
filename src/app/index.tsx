@@ -27,9 +27,11 @@ import { IndeterminateProgressBar } from '@/components/IndeterminateProgressBar'
 import { useRealtimeDictation } from '@/hooks/whisper/use-realtime-dictation'
 import { useWarmSession } from '@/hooks/whisper/use-warm-session'
 import { useSharedModelManagement } from '@/hooks/whisper/model-management-context'
+import { ParakeetPreparingBanner } from '@/components/Dictation/ParakeetPreparingBanner'
 import { WarmSessionBanner } from '@/components/Dictation/WarmSessionBanner'
 import { DictationReadinessBanner } from '@/components/DictationReadinessBanner'
 import { useDictationReadiness } from '@/hooks/whisper/use-dictation-readiness'
+import { useParakeetPreparing } from '@/hooks/whisper/use-parakeet-preparing'
 import { ModelLanguageChips } from '@/components/Dictation/ModelLanguageChips'
 import { FormattingBar } from '@/components/Dictation/FormattingBar'
 import { useFormattingSettings } from '@/hooks/settings/use-formatting-settings'
@@ -74,6 +76,7 @@ function DictationScreen() {
   const warmSession = useWarmSession()
   const modelMgmt = useSharedModelManagement()
   const readiness = useDictationReadiness()
+  const parakeetPreparing = useParakeetPreparing()
   // Formatting lives on the home screen too, so the chip and the sheet share
   // one hook instance and stay in step.
   const formatting = useFormattingSettings()
@@ -164,6 +167,8 @@ function DictationScreen() {
         {warmSession.isActive ? (
           <WarmSessionBanner onEnd={() => void warmSession.end()} />
         ) : null}
+
+        {parakeetPreparing ? <ParakeetPreparingBanner /> : null}
 
         <DictationReadinessBanner readiness={readiness} />
 

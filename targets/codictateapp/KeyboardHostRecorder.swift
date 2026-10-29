@@ -70,6 +70,74 @@ private final class TranscriptionRouter {
     private let whisper = WhisperEngine()
     private let cohere = CohereEngine()
 
+    /// The App Group key for the build Parakeet was last prepared for.
+    private static let parakeetPreparedBuildKey = "parakeetPreparedBuild"
+    /// Same rule as macOS Settings: a Preparation shorter than this is never shown.
+    private static let preparingRevealDelay: TimeInterval = 1
+    private var didCheckParakeetAfterUpdate = false
+
+    /// Starts loading Parakeet when recording starts, so the load runs while the user
+    /// speaks and `transcribe()` finds it loaded or joins it. Parakeet only: Whisper and
+    /// hviske run Metal work, which may not run with the Host in the background.
+    /// Fire-and-forget; recording never waits on it.
+    func warmUpForRecording(suite: UserDefaults) {
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
+        let variant = ModelManager.Variant(rawValue: preferred) ?? .base
+        guard variant.engine == .parakeet, ParakeetModelManager.shared.isReady else { return }
+        let parakeet = parakeet
+        Task {
+            do {
+                try await parakeet.warmUp()
+            } catch {
+                NSLog("[KeyboardHost] Parakeet warm-up failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Parakeet Preparation after an app update. iOS recompiles the Neural Engine copy
+    /// for each new build, so the first load after an update can take seconds to minutes;
+    /// doing it now keeps it out of the first Dictation. Called on foreground activation
+    /// and runs once per process, so a background relaunch never starts it: a sustained
+    /// CPU burst in the background risks an energy exception. Main thread.
+    func prepareParakeetAfterUpdateIfNeeded() {
+        guard !didCheckParakeetAfterUpdate else { return }
+        didCheckParakeetAfterUpdate = true
+        guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
+        let build = Self.currentBuild
+        guard suite.string(forKey: Self.parakeetPreparedBuildKey) != build else { return }
+        let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
+        let variant = ModelManager.Variant(rawValue: preferred) ?? .base
+        guard variant.engine == .parakeet,
+              suite.bool(forKey: KeyboardDictationBridge.parakeetModelReadyKey) else { return }
+
+        NSLog("[KeyboardHost] Preparing Parakeet for build \(build)")
+        let parakeet = parakeet
+        let reveal = DispatchWorkItem { ParakeetModelManager.shared.setPreparing(true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.preparingRevealDelay, execute: reveal)
+        Task(priority: .utility) {
+            let started = Date()
+            do {
+                try await parakeet.warmUp()
+                suite.set(build, forKey: Self.parakeetPreparedBuildKey)
+                suite.synchronize()
+                NSLog("[KeyboardHost] Parakeet prepared in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+            } catch {
+                NSLog("[KeyboardHost] Parakeet preparation failed: \(error.localizedDescription)")
+            }
+            await MainActor.run {
+                reveal.cancel()
+                ParakeetModelManager.shared.setPreparing(false)
+            }
+        }
+    }
+
+    private static var currentBuild: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
     func transcribeWav(atPath wavPath: String, suite: UserDefaults, onComplete: @escaping (String?) -> Void) {
         let source = suite.string(forKey: KeyboardDictationBridge.sourceKey)
             ?? KeyboardDictationBridge.sourceHost
@@ -695,6 +763,7 @@ final class KeyboardHostRecorder: NSObject {
     }
 
     @objc private func handleAppActivation() {
+        TranscriptionRouter.shared.prepareParakeetAfterUpdateIfNeeded()
         resumeKeyboardListenSessionIfNeeded()
         guard recorder == nil else { return }
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
@@ -912,6 +981,7 @@ final class KeyboardHostRecorder: NSObject {
             fail(suite, "Recorder error: \(error.localizedDescription)")
             return
         }
+        TranscriptionRouter.shared.warmUpForRecording(suite: suite)
 
         suite.set(KeyboardDictationBridge.phaseRecording, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
@@ -1228,6 +1298,11 @@ final class KeyboardHostRecorder: NSObject {
 
     func cancelKeyboardAutoStop() {
         cancelAutoStop()
+    }
+
+    /// Starts loading the selected Speech Model while the user speaks (Parakeet only).
+    func warmUpSpeechModelForRecording(suite: UserDefaults) {
+        TranscriptionRouter.shared.warmUpForRecording(suite: suite)
     }
 
     func transcribeWav(atPath path: String, suite: UserDefaults, onComplete: ((String?) -> Void)? = nil) {
@@ -1653,6 +1728,7 @@ final class KeyboardHostRecorder: NSObject {
             fail(suite, "Recorder error: \(error.localizedDescription)")
             return
         }
+        TranscriptionRouter.shared.warmUpForRecording(suite: suite)
 
         suite.set(KeyboardDictationBridge.phaseRecording, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.errorKey)

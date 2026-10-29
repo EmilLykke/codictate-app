@@ -264,6 +264,7 @@ final class KeyboardListenSession {
         capturedSamples.removeAll(keepingCapacity: true)
         samplesLock.unlock()
         isCapturing = true
+        KeyboardHostRecorder.shared.warmUpSpeechModelForRecording(suite: suite)
 
         suite.set(KeyboardDictationBridge.phaseRecording, forKey: KeyboardDictationBridge.phaseKey)
         suite.removeObject(forKey: KeyboardDictationBridge.errorKey)

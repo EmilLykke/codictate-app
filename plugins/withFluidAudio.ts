@@ -5,12 +5,15 @@
  *
  * Adds the FluidAudio Swift Package (SPM) to the main iOS app target.
  * FluidAudio provides Parakeet TDT v3 ASR via CoreML on the Apple Neural Engine.
+ *
+ * Pinned to one exact version: a FluidAudio bump can change the model files or how
+ * they load, so it is an upgrade made on purpose, never one a clean build picks up.
  */
 
 import { ConfigPlugin, withXcodeProject } from "expo/config-plugins";
 
 const FLUIDAUDIO_REPO = "https://github.com/FluidInference/FluidAudio.git";
-const FLUIDAUDIO_MIN_VERSION = "0.14.5";
+const FLUIDAUDIO_VERSION = "0.15.7";
 const FLUIDAUDIO_PRODUCT = "FluidAudio";
 
 const withFluidAudio: ConfigPlugin = (config) => {
@@ -26,15 +29,22 @@ const withFluidAudio: ConfigPlugin = (config) => {
     }
 
     const existingRefs = objects.XCRemoteSwiftPackageReference;
-    const alreadyAdded = Object.keys(existingRefs).some((key) => {
+    const existingKey = Object.keys(existingRefs).find((key) => {
       if (key.endsWith("_comment")) return false;
       const ref = existingRefs[key] as { repositoryURL?: string } | undefined;
       return ref?.repositoryURL?.includes("FluidAudio");
     });
 
-    if (alreadyAdded) {
+    if (existingKey) {
+      // A prebuild without --clean keeps the old reference; re-pin it so it never
+      // keeps a range from before the pin.
+      const ref = existingRefs[existingKey] as { requirement?: unknown };
+      ref.requirement = {
+        kind: "exactVersion",
+        version: `"${FLUIDAUDIO_VERSION}"`,
+      };
       console.log(
-        "[withFluidAudio] FluidAudio package already added; skipping",
+        `[withFluidAudio] FluidAudio package already added; pinned to ${FLUIDAUDIO_VERSION}`,
       );
       return c;
     }
@@ -46,8 +56,8 @@ const withFluidAudio: ConfigPlugin = (config) => {
       isa: "XCRemoteSwiftPackageReference",
       repositoryURL: `"${FLUIDAUDIO_REPO}"`,
       requirement: {
-        kind: "upToNextMajorVersion",
-        minimumVersion: `"${FLUIDAUDIO_MIN_VERSION}"`,
+        kind: "exactVersion",
+        version: `"${FLUIDAUDIO_VERSION}"`,
       },
     };
     existingRefs[`${pkgRefUuid}_comment`] =
@@ -124,7 +134,7 @@ const withFluidAudio: ConfigPlugin = (config) => {
     }
 
     console.log(
-      `[withFluidAudio] Added FluidAudio SPM package (>= ${FLUIDAUDIO_MIN_VERSION})`,
+      `[withFluidAudio] Added FluidAudio SPM package (exactly ${FLUIDAUDIO_VERSION})`,
     );
 
     return c;

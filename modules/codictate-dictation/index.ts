@@ -42,6 +42,7 @@ export type FormattingStyle =
   | "formal";
 export type FormattingContext = "general" | "email";
 export type FormattingModelProgressEvent = { progress: number };
+export type ParakeetPreparingEvent = { preparing: boolean };
 export type FormattingModelStatus = {
   ready: boolean;
   downloading: boolean;
@@ -74,6 +75,7 @@ type CodictateDictationEvents = {
   onModelProgress: (event: ModelProgressEvent) => void;
   onFormattingModelProgress: (event: FormattingModelProgressEvent) => void;
   onFormattingModelStatus: (event: FormattingModelStatus) => void;
+  onParakeetPreparing: (event: ParakeetPreparingEvent) => void;
   "codictate.readiness.changed": (event: DictationReadiness) => void;
 };
 
@@ -93,6 +95,7 @@ declare class CodictateDictationNativeModule extends NativeModule<CodictateDicta
   getTranscriptionLanguageId(): string;
   setTranscriptionLanguageId(id: string): void;
   getDictationReadiness(): DictationReadiness;
+  isParakeetPreparing(): boolean;
   getFormattingModel(): FormattingModel;
   setFormattingModel(model: FormattingModel): void;
   getFormattingStyle(): FormattingStyle;
@@ -234,6 +237,20 @@ export function addDictationReadinessListener(
   listener: (readiness: DictationReadiness) => void,
 ): EventSubscription {
   return Native.addListener("codictate.readiness.changed", listener);
+}
+
+/**
+ * Whether the Host is preparing Parakeet after an app update, the one-time Neural
+ * Engine compile. True only once that load has run for more than about 1 s.
+ */
+export function isParakeetPreparing(): boolean {
+  return Native.isParakeetPreparing();
+}
+
+export function onParakeetPreparing(
+  listener: (event: ParakeetPreparingEvent) => void,
+): EventSubscription {
+  return Native.addListener("onParakeetPreparing", listener);
 }
 
 export function getFormattingModel(): FormattingModel {
