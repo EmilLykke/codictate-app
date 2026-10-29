@@ -356,17 +356,20 @@ public final class CodictateDictationModule: Module {
         AsyncFunction("deleteModel") { (variantStr: String?) -> Void in
             let variant = AppGroupModelManager.Variant(rawValue: variantStr ?? "") ?? .base
             if variant == .parakeet {
+                // The Host releases its loaded models first, so nothing holds the files.
+                NotificationCenter.default.post(
+                    name: Notification.Name("codictate.parakeet.reset"),
+                    object: nil
+                )
                 if let dir = AppGroupModelManager.shared.parakeetModelDirectory {
                     try? FileManager.default.removeItem(at: dir)
                 }
                 let suite = UserDefaults(suiteName: Self.appGroupID)
                 suite?.removeObject(forKey: "parakeetModelReady")
+                // A re-download gets the after-update Parakeet Preparation again.
+                suite?.removeObject(forKey: "parakeetPreparedBuild")
                 suite?.synchronize()
                 AppGroupModelManager.shared.resetParakeetDownloadState()
-                NotificationCenter.default.post(
-                    name: Notification.Name("codictate.parakeet.reset"),
-                    object: nil
-                )
                 Self.requestReadinessRecompute()
                 return
             }

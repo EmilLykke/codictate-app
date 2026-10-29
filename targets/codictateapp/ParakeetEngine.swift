@@ -16,14 +16,12 @@ enum ParakeetModelNotification {
 }
 
 /// Manages the Parakeet TDT v3 CoreML model lifecycle.
-/// Uses FluidAudio's `downloadAndLoad` for first-time download and `load(from:)`
-/// for subsequent launches. Models are stored in the app's Documents directory
-/// (not the App Group), because only the main app process runs Parakeet inference.
+/// Uses FluidAudio's `downloadAndLoad`, which downloads once and then loads from its
+/// cache. The cache lives in the app's Application Support directory (not the App
+/// Group), because only the main app process runs Parakeet inference.
 final class ParakeetModelManager {
 
     static let shared = ParakeetModelManager()
-
-    private static let modelDirName = "parakeet-tdt-v3"
 
     private static let readyKey = "parakeetModelReady"
     /// True while a Parakeet Preparation the app shows is running. The Host writes, JS reads.
@@ -33,9 +31,12 @@ final class ParakeetModelManager {
     private var downloadTask: Task<Void, Error>?
     private let downloadLock = NSLock()
 
+    /// Where `downloadAndLoad(version: .v3)` keeps the models:
+    /// `Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`. Mirrored as a literal by
+    /// `AppGroupModelManager.parakeetModelDirectory` in the Expo module, which cannot
+    /// import FluidAudio; keep the two the same.
     var modelDirectory: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent(Self.modelDirName, isDirectory: true)
+        AsrModels.defaultCacheDirectory(for: .v3)
     }
 
     /// Persistent readiness flag: true after first successful download+load.
@@ -47,7 +48,9 @@ final class ParakeetModelManager {
         return suite?.bool(forKey: Self.readyKey) == true
     }
 
-    /// Clears in-memory cache after Settings delete so re-download runs fully.
+    /// Clears in-memory cache after Settings delete so re-download runs fully, and lets go
+    /// of the loaded models before the Expo module removes `modelDirectory`.
+    /// `ParakeetEngine` releases its `AsrManager` on the same notification.
     func resetAfterDelete() {
         downloadLock.lock()
         downloadTask?.cancel()
@@ -208,6 +211,14 @@ final class ParakeetEngine: TranscriptionEngine {
         ) { [weak self] _ in
             self?.unload()
         }
+        // Posted when the user deletes Parakeet: nothing may keep the model files loaded.
+        NotificationCenter.default.addObserver(
+            forName: ParakeetModelNotification.reset,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.unload()
+        }
     }
 
     /// `languageId` is ignored: Parakeet TDT v3 takes no language input, which is
@@ -228,7 +239,7 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     /// Releases the loaded `AsrManager`; `ParakeetModelManager` drops its models on the
-    /// same memory warning. A transcription already running keeps its own reference and
+    /// same memory warning or delete. A transcription already running keeps its own reference and
     /// finishes; a load in flight finishes for its callers but is not kept.
     func unload() {
         loadLock.lock()

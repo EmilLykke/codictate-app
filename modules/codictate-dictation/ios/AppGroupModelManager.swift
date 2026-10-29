@@ -153,9 +153,13 @@ final class AppGroupModelManager {
 
     private static let parakeetReadyKey = "parakeetModelReady"
 
+    /// Where FluidAudio keeps Parakeet TDT v3: its `AsrModels.defaultCacheDirectory(for: .v3)`.
+    /// Mirror of `ParakeetModelManager.modelDirectory` in the main app target, which asks
+    /// FluidAudio for it; a literal here because this module cannot import FluidAudio.
+    /// Keep the two the same.
     var parakeetModelDirectory: URL? {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        return docs?.appendingPathComponent("parakeet-tdt-v3")
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        return appSupport?.appendingPathComponent("FluidAudio/Models/parakeet-tdt-0.6b-v3", isDirectory: true)
     }
 
     /// Checks the persistent flag set by ParakeetModelManager after a successful download.
