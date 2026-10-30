@@ -6,6 +6,7 @@ import {
   ensureModel,
   getPreferredModel,
   listModels,
+  onModelDownloadEnded,
   onModelProgress,
   setPreferredModel,
   type ModelInfo,
@@ -20,13 +21,6 @@ export function useModelManagement() {
     Partial<Record<ModelVariant, number>>
   >({})
 
-  useEffect(() => {
-    const sub = onModelProgress((e) => {
-      setDownloadProgress((prev) => ({ ...prev, [e.variant]: e.progress }))
-    })
-    return () => sub.remove()
-  }, [])
-
   const refresh = useCallback(() => {
     void Promise.all([listModels(), getPreferredModel()]).then(
       ([list, pref]) => {
@@ -35,6 +29,22 @@ export function useModelManagement() {
       }
     )
   }, [])
+
+  // Progress arrives for every download, including ones started from the home
+  // screen, so the end of every download clears it too.
+  useEffect(() => {
+    const progressSub = onModelProgress((e) => {
+      setDownloadProgress((prev) => ({ ...prev, [e.variant]: e.progress }))
+    })
+    const endedSub = onModelDownloadEnded((e) => {
+      clearDownloadProgress(e.variant)
+      refresh()
+    })
+    return () => {
+      progressSub.remove()
+      endedSub.remove()
+    }
+  }, [refresh])
 
   useEffect(() => {
     refresh()

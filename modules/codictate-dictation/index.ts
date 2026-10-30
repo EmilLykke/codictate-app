@@ -32,6 +32,7 @@ export type ErrorEvent = { message: string };
 
 export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske" | "ekko";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
+export type ModelDownloadEndedEvent = { variant: ModelVariant };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
 export type FormattingModel = "off" | "s1-mini";
@@ -73,6 +74,7 @@ type CodictateDictationEvents = {
   onTranscript: (event: TranscriptEvent) => void;
   onError: (event: ErrorEvent) => void;
   onModelProgress: (event: ModelProgressEvent) => void;
+  onModelDownloadEnded: (event: ModelDownloadEndedEvent) => void;
   onFormattingModelProgress: (event: FormattingModelProgressEvent) => void;
   onFormattingModelStatus: (event: FormattingModelStatus) => void;
   onParakeetPreparing: (event: ParakeetPreparingEvent) => void;
@@ -162,6 +164,13 @@ export function onModelProgress(
   listener: (event: ModelProgressEvent) => void,
 ): EventSubscription {
   return Native.addListener("onModelProgress", listener);
+}
+
+/** A Speech Model download finished or failed, whichever screen started it. */
+export function onModelDownloadEnded(
+  listener: (event: ModelDownloadEndedEvent) => void,
+): EventSubscription {
+  return Native.addListener("onModelDownloadEnded", listener);
 }
 
 export function onFormattingModelProgress(

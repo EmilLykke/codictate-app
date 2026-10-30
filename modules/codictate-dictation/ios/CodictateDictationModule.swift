@@ -87,6 +87,7 @@ public final class CodictateDictationModule: Module {
             "onTranscript",
             "onError",
             "onModelProgress",
+            "onModelDownloadEnded",
             "onFormattingModelProgress",
             "onFormattingModelStatus",
             "onParakeetPreparing",
@@ -342,8 +343,11 @@ public final class CodictateDictationModule: Module {
                     onProgress: { [weak self] progress in
                         self?.sendEvent("onModelProgress", ["variant": variant.rawValue, "progress": progress])
                     },
-                    onComplete: { result in
+                    onComplete: { [weak self] result in
                         Self.requestReadinessRecompute()
+                        // Every screen showing this download's progress clears it here,
+                        // not only the one whose ensureModel call started it.
+                        self?.sendEvent("onModelDownloadEnded", ["variant": variant.rawValue])
                         switch result {
                         case .success: continuation.resume()
                         case .failure(let err): continuation.resume(throwing: err)
