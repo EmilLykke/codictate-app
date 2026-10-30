@@ -36,6 +36,7 @@ final class ModelManager {
         case base = "base"
         case baseEn = "base_en"
         case hviske = "hviske"
+        case ekko = "ekko"
 
         /// The Transcription Language id meaning "let the Speech Model decide".
         static let automaticLanguageId = "auto"
@@ -50,6 +51,8 @@ final class ModelManager {
             case whisper
             /// crispasr's cohere backend, the only runtime that reads hviske GGUF weights.
             case cohere
+            /// parakeet.cpp, the only runtime that reads ekko GGUF weights.
+            case ekko
         }
 
         var engine: Engine {
@@ -57,6 +60,7 @@ final class ModelManager {
             case .parakeet: return .parakeet
             case .base, .baseEn: return .whisper
             case .hviske: return .cohere
+            case .ekko: return .ekko
             }
         }
 
@@ -66,6 +70,7 @@ final class ModelManager {
             case .base: return "Base (Q5_1)"
             case .baseEn: return "Base.en (Q5_1)"
             case .hviske: return "Hviske V5 Tiny Q5"
+            case .ekko: return "Ekko V1 Tiny Q5"
             }
         }
 
@@ -78,7 +83,7 @@ final class ModelManager {
             case .parakeet: return nil
             case .base: return nil
             case .baseEn: return ["en"]
-            case .hviske: return ["da"]
+            case .hviske, .ekko: return ["da"]
             }
         }
 
@@ -87,7 +92,7 @@ final class ModelManager {
         var locksLanguageToAutomatic: Bool {
             switch self {
             case .parakeet: return true
-            case .base, .baseEn, .hviske: return false
+            case .base, .baseEn, .hviske, .ekko: return false
             }
         }
 
@@ -105,7 +110,7 @@ final class ModelManager {
             case .parakeet: return "automatic language detection"
             case .base: return "every language"
             case .baseEn: return "English"
-            case .hviske: return "Danish"
+            case .hviske, .ekko: return "Danish"
             }
         }
 
@@ -139,6 +144,7 @@ final class ModelManager {
             case .base: return "ggml-base-q5_1.bin"
             case .baseEn: return "ggml-base.en-q5_1.bin"
             case .hviske: return "hviske-v5-tiny-q5_0.gguf"
+            case .ekko: return "ekko-v1-tiny-q5_0.gguf"
             }
         }
 
@@ -160,6 +166,25 @@ final class ModelManager {
                 return URL(string:
                     "https://huggingface.co/emillykkegrann/hviske-v5-tiny-GGUF/resolve/main/hviske-v5-tiny-q5_0.gguf"
                 )!
+            case .ekko:
+                // The Mirror commit, never `main`: desktop's `EKKO_V1_TINY_MIRROR_REVISION`.
+                return URL(string:
+                    "https://huggingface.co/emillykkegrann/ekko-v1-tiny-GGUF/resolve/d60b91ae714fdccf4ecd7a9f22a06b349c87ffc1/ekko-v1-tiny-q5_0.gguf"
+                )!
+            }
+        }
+
+        /// The exact file a download must be, for a Speech Model pinned by size and sha256.
+        /// A downloaded file that does not match is never installed. nil for the Speech
+        /// Models fetched from an unpinned `main`, which only get the `minBytes` floor.
+        var pinnedFile: PinnedFile? {
+            switch self {
+            case .parakeet, .base, .baseEn, .hviske: return nil
+            case .ekko:
+                return PinnedFile(
+                    bytes: 134_710_976,
+                    sha256: "f5380485d80d552ae46313185126d7ade54b2e7360cb0d15b91f1ab26ced7791"
+                )
             }
         }
 
@@ -169,16 +194,64 @@ final class ModelManager {
             case .parakeet: return 0
             case .base, .baseEn: return 50 * 1024 * 1024
             case .hviske: return 150 * 1024 * 1024
+            case .ekko: return pinnedFile?.bytes ?? 0
             }
         }
 
         /// Every Speech Model whose weights are a single file in the App Group container.
-        static let fileBacked: [Variant] = [.base, .baseEn, .hviske]
+        /// ekko's weights are, though it also needs the Punctuation Model to count as ready.
+        static let fileBacked: [Variant] = [.base, .baseEn, .hviske, .ekko]
 
-        static let all: [Variant] = [.parakeet, .base, .baseEn, .hviske]
+        static let all: [Variant] = [.parakeet, .base, .baseEn, .hviske, .ekko]
 
         static func variant(forRemote url: URL) -> Variant? {
             fileBacked.first { $0.url == url }
+        }
+    }
+
+    /// A downloaded file's pinned size and sha256.
+    struct PinnedFile: Equatable {
+        let bytes: Int64
+        let sha256: String
+    }
+
+    /// ekko-pnc, the Punctuation Model every ekko Raw Transcript goes through. Its Mirror,
+    /// pinned commit and the runtime files Punctuation Restoration reads, as desktop pins them
+    /// in `src/shared/punctuation-model-files.ts` (the Mirror's licence files are carried in
+    /// `third-party/ekko-pnc` instead). Installed in its own App Group folder, beside the
+    /// Speech Models, and downloaded as part of ekko.
+    enum PunctuationModel {
+        struct File: Equatable {
+            /// Path inside the Mirror, and inside `directoryName`.
+            let path: String
+            let pinned: PinnedFile
+        }
+
+        static let mirrorRepoId = "emillykkegrann/ekko-pnc-ONNX"
+        /// The Mirror commit, never `main`. Moving it is a new model.
+        static let mirrorRevision = "44b0483333423a31d36907f1d71dee7e71045a42"
+        /// The App Group folder the runtime files install into.
+        static let directoryName = "ekko-pnc"
+
+        /// What `EkkoPncModel` opens. The Punctuation Model is installed only with all three.
+        static let runtimeFiles: [File] = [
+            File(path: "pnc.int8.onnx", pinned: PinnedFile(
+                bytes: 22_424_741,
+                sha256: "46bb979d409731872f10b6cb71298594595f16368d2aec2fcaf94d87b4266527")),
+            File(path: "tokenizer.json", pinned: PinnedFile(
+                bytes: 2_301_084,
+                sha256: "a1e0d43ee307ad7a1ccc23e6e5398d877a68ca7f576067ac507625a0d50e9502")),
+            File(path: "config.json", pinned: PinnedFile(
+                bytes: 1_062,
+                sha256: "dc655c46f69eeb15dd43786ad58fb5862cc794b36cc9d2c426ab5bc4b01f23ca")),
+        ]
+
+        static func url(for file: File) -> URL {
+            URL(string: "https://huggingface.co/\(mirrorRepoId)/resolve/\(mirrorRevision)/\(file.path)")!
+        }
+
+        static func file(forRemote url: URL) -> File? {
+            runtimeFiles.first { Self.url(for: $0) == url }
         }
     }
 
@@ -187,6 +260,9 @@ final class ModelManager {
     private let groupID = "group.app.codictate"
 
     private var requestObserverInstalled = false
+    /// The URLs each Speech Model is downloading. ekko downloads several at once and is in
+    /// flight until the last one ends. Main queue only, like `onInFlightChange`.
+    private var inFlightDownloads: [Variant: Set<URL>] = [:]
 
     private init() {}
 
@@ -206,22 +282,35 @@ final class ModelManager {
         switch variant {
         case .parakeet:
             return ParakeetModelManager.shared.modelDirectory.path
-        case .base, .baseEn, .hviske:
+        case .base, .baseEn, .hviske, .ekko:
             return containerURL?.appendingPathComponent(variant.filename).path
         }
     }
 
+    /// ekko is ready only with its GGUF and every ekko-pnc runtime file on disk: its Raw
+    /// Transcript is lowercase and unpunctuated, and Punctuation Restoration always runs on it.
     func modelIsReady(for variant: Variant) -> Bool {
         switch variant {
         case .parakeet:
             return ParakeetModelManager.shared.isReady
         case .base, .baseEn, .hviske:
-            guard let path = containerURL?.appendingPathComponent(variant.filename).path else {
+            return weightsArePresent(variant)
+        case .ekko:
+            return weightsArePresent(variant) && punctuationModelIsInstalled
+        }
+    }
+
+    /// The folder holding ekko-pnc's runtime files, which `PunctuationRestorer` opens.
+    var punctuationModelDirectory: URL? {
+        containerURL?.appendingPathComponent(PunctuationModel.directoryName, isDirectory: true)
+    }
+
+    var punctuationModelIsInstalled: Bool {
+        PunctuationModel.runtimeFiles.allSatisfy { file in
+            guard let url = punctuationModelDirectory?.appendingPathComponent(file.path) else {
                 return false
             }
-            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-            let size = (attrs?[.size] as? Int64) ?? 0
-            return size >= variant.minBytes
+            return Self.fileSize(url) == file.pinned.bytes
         }
     }
 
@@ -320,6 +409,11 @@ final class ModelManager {
             return
         }
 
+        if variant == .ekko {
+            ensureEkko(onProgress: onProgress, onComplete: onComplete)
+            return
+        }
+
         onProgress(0)
         downloader.download(
             from: variant.url,
@@ -335,7 +429,115 @@ final class ModelManager {
         )
     }
 
+    /// `ensureModel(variant:onProgress:onComplete:)` for a caller that only needs the path.
+    func ensureModel(variant: Variant) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            ensureModel(
+                variant: variant,
+                onProgress: { _ in },
+                onComplete: { continuation.resume(with: $0) }
+            )
+        }
+    }
+
     // MARK: - Private
+
+    private func weightsArePresent(_ variant: Variant) -> Bool {
+        guard let path = modelFilePath(for: variant) else { return false }
+        return Self.fileSize(URL(fileURLWithPath: path)) >= variant.minBytes
+    }
+
+    /// ekko is one download with one progress value: whichever of its GGUF and the ekko-pnc
+    /// runtime files are missing, started together on the one background session so they all
+    /// keep going if the app is suspended. Progress is weighted by the pinned sizes. A file
+    /// already installed is never fetched again, so a retry after a failure only downloads
+    /// what is still missing. Every callback arrives on the main queue.
+    private func ensureEkko(
+        onProgress: @escaping (Double) -> Void,
+        onComplete: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard let ggufPath = modelFilePath(for: .ekko),
+              let pncDirectory = punctuationModelDirectory else {
+            onComplete(.failure(NSError(
+                domain: "ModelManager", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable."]
+            )))
+            return
+        }
+
+        var parts: [(url: URL, bytes: Int64)] = []
+        if !weightsArePresent(.ekko) {
+            parts.append((Variant.ekko.url, Variant.ekko.minBytes))
+        }
+        for file in PunctuationModel.runtimeFiles
+        where Self.fileSize(pncDirectory.appendingPathComponent(file.path)) != file.pinned.bytes {
+            parts.append((PunctuationModel.url(for: file), file.pinned.bytes))
+        }
+
+        let totalBytes = Double(parts.reduce(0) { $0 + $1.bytes })
+        var fractions: [URL: Double] = [:]
+        var remaining = parts.count
+        var firstError: Error?
+
+        onProgress(0)
+        for part in parts {
+            downloader.download(
+                from: part.url,
+                onProgress: { fraction in
+                    fractions[part.url] = fraction
+                    let done = parts.reduce(0.0) { $0 + (fractions[$1.url] ?? 0) * Double($1.bytes) }
+                    onProgress(done / totalBytes)
+                },
+                onComplete: { [weak self] result in
+                    switch result {
+                    case .success: fractions[part.url] = 1
+                    case .failure(let error): firstError = firstError ?? error
+                    }
+                    remaining -= 1
+                    guard remaining == 0 else { return }
+                    if let firstError {
+                        onComplete(.failure(firstError))
+                    } else if self?.modelIsReady(for: .ekko) == true {
+                        onComplete(.success(ggufPath))
+                    } else {
+                        onComplete(.failure(NSError(
+                            domain: "ModelManager", code: 23,
+                            userInfo: [NSLocalizedDescriptionKey: "Ekko V1 Tiny Q5 download is incomplete."]
+                        )))
+                    }
+                }
+            )
+        }
+    }
+
+    /// The Speech Model a remote URL is downloaded for: its own weights, or ekko-pnc's
+    /// runtime files, which only ekko downloads.
+    private func downloadOwner(forRemote url: URL) -> Variant? {
+        if let variant = Variant.variant(forRemote: url) { return variant }
+        return PunctuationModel.file(forRemote: url) == nil ? nil : .ekko
+    }
+
+    /// The pinned size and sha256 a downloaded file must match, or nil when it has none.
+    private func pinnedFile(forRemote url: URL) -> PinnedFile? {
+        if let file = PunctuationModel.file(forRemote: url) { return file.pinned }
+        return Variant.variant(forRemote: url)?.pinnedFile
+    }
+
+    /// Main queue. Posts `stateChanged` only when the Speech Model as a whole starts or
+    /// stops downloading, so ekko's first finished file does not end its "downloading".
+    private func downloadInFlightChanged(_ url: URL, _ inFlight: Bool) {
+        guard let variant = downloadOwner(forRemote: url) else { return }
+        var urls = inFlightDownloads[variant] ?? []
+        let wasInFlight = !urls.isEmpty
+        if inFlight { urls.insert(url) } else { urls.remove(url) }
+        inFlightDownloads[variant] = urls
+        guard wasInFlight != !urls.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: ModelDownloadNotification.stateChanged,
+            object: nil,
+            userInfo: ["variant": variant.rawValue, "inFlight": !urls.isEmpty]
+        )
+    }
 
     /// Answers one `codictate.model.ensureModel` request. Failures are reported as a
     /// message rather than an `Error`, because a notification cannot carry one across a
@@ -382,10 +584,22 @@ final class ModelManager {
             if url == FormattingConfiguration.url {
                 return self.containerURL?.appendingPathComponent(FormattingConfiguration.filename)
             }
+            if let file = PunctuationModel.file(forRemote: url) {
+                return self.punctuationModelDirectory?.appendingPathComponent(file.path)
+            }
             guard let variant = Variant.variant(forRemote: url) else { return nil }
             return self.containerURL?.appendingPathComponent(variant.filename)
         },
-        validateFile: { url, file in
+        validateFile: { [weak self] url, file in
+            if let pinned = self?.pinnedFile(forRemote: url) {
+                guard Self.fileSize(file) == pinned.bytes else {
+                    return NSError(domain: "ModelManager", code: 24, userInfo: [NSLocalizedDescriptionKey: "\(url.lastPathComponent) download has the wrong size."])
+                }
+                guard Self.sha256(file) == pinned.sha256 else {
+                    return NSError(domain: "ModelManager", code: 25, userInfo: [NSLocalizedDescriptionKey: "\(url.lastPathComponent) download failed integrity verification."])
+                }
+                return nil
+            }
             guard url == FormattingConfiguration.url else { return nil }
             guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? Int64,
                   size == FormattingConfiguration.byteCount else {
@@ -407,12 +621,7 @@ final class ModelManager {
                 suite?.synchronize()
                 return
             }
-            guard let variant = Variant.variant(forRemote: url) else { return }
-            NotificationCenter.default.post(
-                name: ModelDownloadNotification.stateChanged,
-                object: nil,
-                userInfo: ["variant": variant.rawValue, "inFlight": inFlight]
-            )
+            self.downloadInFlightChanged(url, inFlight)
         },
         onCompleteResult: { url, result in
             guard url == FormattingConfiguration.url else { return }
@@ -674,6 +883,11 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
 }
 
 private extension ModelManager {
+    static func fileSize(_ url: URL) -> Int64 {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attrs?[.size] as? Int64) ?? 0
+    }
+
     static func sha256(_ url: URL) -> String? {
         guard let stream = InputStream(url: url) else { return nil }
         stream.open()

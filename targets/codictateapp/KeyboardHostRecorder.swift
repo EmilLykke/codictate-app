@@ -62,13 +62,33 @@ enum DictationNotification {
     static let endKeyboardWarmSession = Notification.Name("codictate.dictation.endKeyboardWarmSession")
 }
 
-/// Selects between ParakeetEngine, WhisperEngine and CohereEngine based on the user's
-/// preferred Speech Model stored in the App Group UserDefaults.
+/// Selects between ParakeetEngine, WhisperEngine, CohereEngine and EkkoEngine based on the
+/// user's preferred Speech Model stored in the App Group UserDefaults.
+///
+/// After the engine, in order: Punctuation Restoration (ekko only, always), then S1-mini
+/// formatting when eligible.
 private final class TranscriptionRouter {
     static let shared = TranscriptionRouter()
     private let parakeet = ParakeetEngine()
     private let whisper = WhisperEngine()
     private let cohere = CohereEngine()
+    private let ekko = EkkoEngine(modelPath: { try await ModelManager.shared.ensureModel(variant: .ekko) })
+    /// ekko-pnc, held for the life of the process like the engines. nil only without an App
+    /// Group container, where ekko cannot be ready either.
+    private let punctuation: PunctuationRestorer? = ModelManager.shared.punctuationModelDirectory
+        .map { PunctuationRestorer(modelDirectory: $0.path) }
+
+    private init() {
+        // Same rule as Parakeet: keep the loaded model until memory runs short, then let the
+        // next Dictation load it again.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [ekko = self.ekko] _ in
+            ekko.unload()
+        }
+    }
 
     /// The App Group key for the build Parakeet was last prepared for.
     private static let parakeetPreparedBuildKey = "parakeetPreparedBuild"
@@ -76,21 +96,39 @@ private final class TranscriptionRouter {
     private static let preparingRevealDelay: TimeInterval = 1
     private var didCheckParakeetAfterUpdate = false
 
-    /// Starts loading Parakeet when recording starts, so the load runs while the user
-    /// speaks and `transcribe()` finds it loaded or joins it. Parakeet only: Whisper and
-    /// hviske run Metal work, which may not run with the Host in the background.
-    /// Fire-and-forget; recording never waits on it.
+    /// Starts loading the Speech Model when recording starts, so the load runs while the
+    /// user speaks and `transcribe()` finds it loaded or joins it. Parakeet, and ekko with
+    /// its Punctuation Model: ekko's first Metal load takes seconds. Whisper and hviske are
+    /// not warmed. Fire-and-forget; recording never waits on it.
     func warmUpForRecording(suite: UserDefaults) {
         let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
         let variant = ModelManager.Variant(rawValue: preferred) ?? .base
-        guard variant.engine == .parakeet, ParakeetModelManager.shared.isReady else { return }
-        let parakeet = parakeet
-        Task {
-            do {
-                try await parakeet.warmUp()
-            } catch {
-                NSLog("[KeyboardHost] Parakeet warm-up failed: \(error.localizedDescription)")
+        switch variant.engine {
+        case .parakeet:
+            guard ParakeetModelManager.shared.isReady else { return }
+            let parakeet = parakeet
+            Task {
+                do {
+                    try await parakeet.warmUp()
+                } catch {
+                    NSLog("[KeyboardHost] Parakeet warm-up failed: \(error.localizedDescription)")
+                }
             }
+        case .ekko:
+            guard ModelManager.shared.modelIsReady(for: .ekko) else { return }
+            let ekko = ekko
+            Task {
+                do {
+                    try await ekko.warmUp()
+                } catch {
+                    NSLog("[KeyboardHost] ekko warm-up failed: \(error.localizedDescription)")
+                }
+            }
+            if let punctuation {
+                Task { await punctuation.warmUp() }
+            }
+        case .whisper, .cohere:
+            return
         }
     }
 
@@ -174,7 +212,10 @@ private final class TranscriptionRouter {
             engine = whisper
         case .cohere:
             engine = cohere
+        case .ekko:
+            engine = ekko
         }
+        let restorer = variant.engine == .ekko ? punctuation : nil
 
         Task {
             do {
@@ -187,8 +228,12 @@ private final class TranscriptionRouter {
                     }
                 }
                 guard !rawText.isEmpty else { return }
+                // ekko's Raw Transcript is lowercase and unpunctuated, so Punctuation
+                // Restoration always runs on it. It never fails: on any fault it hands the
+                // words back unchanged.
+                let punctuated = await restorer?.restore(rawText) ?? rawText
                 let text = await FormattingManager.shared.formatIfEligible(
-                    rawText,
+                    punctuated,
                     languageId: languageId,
                     suite: suite
                 )

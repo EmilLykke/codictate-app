@@ -2,8 +2,8 @@ import Foundation
 
 /// Mirrors `ModelManager` from the main app target.
 /// Duplicated intentionally -- the Expo module pod cannot import main-app symbols.
-/// Keep variant filenames, minBytes, engines, labels and Language Locks in sync with
-/// `ModelManager.swift`. Download URLs are deliberately absent here: the Host owns every
+/// Keep variant filenames, minBytes, engines, labels, Language Locks and the ekko-pnc
+/// runtime files in sync with `ModelManager.swift`. Download URLs are deliberately absent here: the Host owns every
 /// download, so this copy never needs one and the two cannot drift on it.
 final class AppGroupModelManager {
 
@@ -12,6 +12,7 @@ final class AppGroupModelManager {
         case base = "base"
         case baseEn = "base_en"
         case hviske = "hviske"
+        case ekko = "ekko"
 
         /// The Transcription Language id meaning "let the Speech Model decide".
         static let automaticLanguageId = "auto"
@@ -21,6 +22,7 @@ final class AppGroupModelManager {
             case parakeet
             case whisper
             case cohere
+            case ekko
         }
 
         var engine: Engine {
@@ -28,6 +30,7 @@ final class AppGroupModelManager {
             case .parakeet: return .parakeet
             case .base, .baseEn: return .whisper
             case .hviske: return .cohere
+            case .ekko: return .ekko
             }
         }
 
@@ -37,6 +40,7 @@ final class AppGroupModelManager {
             case .base: return "Base (Q5_1)"
             case .baseEn: return "Base.en (Q5_1)"
             case .hviske: return "Hviske V5 Tiny Q5"
+            case .ekko: return "Ekko V1 Tiny Q5"
             }
         }
 
@@ -47,7 +51,7 @@ final class AppGroupModelManager {
             case .parakeet: return nil
             case .base: return nil
             case .baseEn: return ["en"]
-            case .hviske: return ["da"]
+            case .hviske, .ekko: return ["da"]
             }
         }
 
@@ -56,7 +60,7 @@ final class AppGroupModelManager {
         var locksLanguageToAutomatic: Bool {
             switch self {
             case .parakeet: return true
-            case .base, .baseEn, .hviske: return false
+            case .base, .baseEn, .hviske, .ekko: return false
             }
         }
 
@@ -95,6 +99,7 @@ final class AppGroupModelManager {
             case .base: return "ggml-base-q5_1.bin"
             case .baseEn: return "ggml-base.en-q5_1.bin"
             case .hviske: return "hviske-v5-tiny-q5_0.gguf"
+            case .ekko: return "ekko-v1-tiny-q5_0.gguf"
             }
         }
 
@@ -104,10 +109,23 @@ final class AppGroupModelManager {
             case .parakeet: return 0
             case .base, .baseEn: return 50 * 1024 * 1024
             case .hviske: return 150 * 1024 * 1024
+            // The pinned size; the Host verifies its sha256 before installing it.
+            case .ekko: return 134_710_976
             }
         }
 
-        static let all: [Variant] = [.parakeet, .base, .baseEn, .hviske]
+        static let all: [Variant] = [.parakeet, .base, .baseEn, .hviske, .ekko]
+    }
+
+    /// ekko-pnc, the Punctuation Model ekko needs: its App Group folder and the runtime
+    /// files with their pinned sizes. Mirror of `ModelManager.PunctuationModel`.
+    enum PunctuationModel {
+        static let directoryName = "ekko-pnc"
+        static let runtimeFiles: [(path: String, bytes: Int64)] = [
+            ("pnc.int8.onnx", 22_424_741),
+            ("tokenizer.json", 2_301_084),
+            ("config.json", 1_062),
+        ]
     }
 
     static let shared = AppGroupModelManager()
@@ -182,21 +200,71 @@ final class AppGroupModelManager {
         switch variant {
         case .parakeet:
             return parakeetModelDirectory?.path
-        case .base, .baseEn, .hviske:
+        case .base, .baseEn, .hviske, .ekko:
             return containerURL?.appendingPathComponent(variant.filename).path
         }
     }
 
+    /// ekko is ready only with its GGUF and every ekko-pnc runtime file on disk.
     func modelIsReady(for variant: Variant) -> Bool {
         switch variant {
         case .parakeet:
             return parakeetModelIsReady()
         case .base, .baseEn, .hviske:
-            guard let path = modelFilePath(for: variant) else { return false }
-            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-            let size = (attrs?[.size] as? Int64) ?? 0
-            return size >= variant.minBytes
+            return weightsArePresent(variant)
+        case .ekko:
+            return weightsArePresent(variant) && punctuationModelIsInstalled
         }
+    }
+
+    /// The folder holding ekko-pnc's runtime files. Mirror of
+    /// `ModelManager.punctuationModelDirectory`.
+    var punctuationModelDirectory: URL? {
+        containerURL?.appendingPathComponent(PunctuationModel.directoryName, isDirectory: true)
+    }
+
+    var punctuationModelIsInstalled: Bool {
+        PunctuationModel.runtimeFiles.allSatisfy { file in
+            guard let url = punctuationModelDirectory?.appendingPathComponent(file.path) else {
+                return false
+            }
+            return Self.fileSize(atPath: url.path) == file.bytes
+        }
+    }
+
+    /// Bytes on disk for a file-backed Speech Model, counting ekko-pnc's runtime files for
+    /// ekko, which downloads them.
+    func installedBytes(for variant: Variant) -> Int64 {
+        guard let path = modelFilePath(for: variant) else { return 0 }
+        var bytes = Self.fileSize(atPath: path)
+        if variant == .ekko, let directory = punctuationModelDirectory {
+            for file in PunctuationModel.runtimeFiles {
+                bytes += Self.fileSize(atPath: directory.appendingPathComponent(file.path).path)
+            }
+        }
+        return bytes
+    }
+
+    /// Removes a file-backed Speech Model's files. Deleting ekko removes ekko-pnc too: on
+    /// iOS only ekko uses the Punctuation Model, so it is part of what ekko installs and
+    /// downloading ekko again brings it back. Revisit if another Speech Model starts using it.
+    func deleteFiles(for variant: Variant) {
+        if let path = modelFilePath(for: variant) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        if variant == .ekko, let directory = punctuationModelDirectory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    private func weightsArePresent(_ variant: Variant) -> Bool {
+        guard let path = modelFilePath(for: variant) else { return false }
+        return Self.fileSize(atPath: path) >= variant.minBytes
+    }
+
+    private static func fileSize(atPath path: String) -> Int64 {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return (attrs?[.size] as? Int64) ?? 0
     }
 
     /// Asks the Host to make a Speech Model's weights present, and reports back on the

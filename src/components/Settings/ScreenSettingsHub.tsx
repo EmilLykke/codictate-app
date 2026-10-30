@@ -110,7 +110,7 @@ export function ScreenSettingsHub() {
                 Open-source licenses
               </Text>
               <Text style={styles.hubRowSubtitle} selectable>
-                Whisper, Hviske, Parakeet, S1-mini
+                Whisper, Hviske, Ekko, Parakeet, S1-mini
               </Text>
             </View>
             <Image

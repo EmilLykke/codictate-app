@@ -36,6 +36,26 @@ original name, "S1-mini" by "Superwhisper", using that exact capitalization.
 This restates the ADDITIONAL TERM of the LICENSE file, which is the
 operative text.`
 
+/** Verbatim NOTICE of the ekko-v1-tiny Mirror; it carries the required NVIDIA attribution. */
+const ekkoV1TinyNoticeBody = `Ekko v1 Tiny is derived from nvidia/parakeet-rnnt-110m-da-dk.
+
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License.
+
+Modifications by RyeAI include Danish domain adaptation and quantized runtime
+artifacts. See the model card for training-data provenance, additional terms,
+and the official NVIDIA license. The agreement is included at
+\`LICENSES/NVIDIA-OPEN-MODEL-LICENSE.pdf\`.`
+
+/** Verbatim NOTICE of the ekko-pnc Mirror. */
+const ekkoPncNoticeBody = `Ekko PnC v2 is derived from jonfd/electra-small-nordic (CC BY 4.0).
+
+Modifications by RyeAI: a fused Danish punctuation and capitalization head,
+a running-text fine-tune, a boundary-logit calibration folded into
+the classifier bias, and ONNX exports. Training text included CoRal, FT Speech
+and NST; CoRal and FT Speech punctuation was restored by GPT-4o (Azure OpenAI).
+
+See MODEL_LICENSE.md and LICENSES/ for applicable terms and attribution.`
+
 const licenses: LicenseEntry[] = [
   {
     name: 'OpenAI Whisper',
@@ -78,6 +98,64 @@ const licenses: LicenseEntry[] = [
       'dictation. Codictate downloads a GGUF conversion of the original weights ' +
       'that it mirrors at huggingface.co/emillykkegrann/hviske-v5-tiny-GGUF. ' +
       'Non-commercial use only.',
+  },
+  {
+    name: 'ekko-v1-tiny',
+    copyright:
+      'Copyright RyeAI. Derived from nvidia/parakeet-rnnt-110m-da-dk, Copyright NVIDIA Corporation',
+    licenseType: 'NVIDIA Open Model License + CC BY 4.0',
+    licenseUrl:
+      'https://huggingface.co/emillykkegrann/ekko-v1-tiny-GGUF/blob/d60b91ae714fdccf4ecd7a9f22a06b349c87ffc1/MODEL_LICENSE.md',
+    projectUrl: 'https://huggingface.co/RyeAI/ekko-v1-tiny',
+    noticeUrl:
+      'https://huggingface.co/emillykkegrann/ekko-v1-tiny-GGUF/blob/d60b91ae714fdccf4ecd7a9f22a06b349c87ffc1/NOTICE',
+    noticeBody: ekkoV1TinyNoticeBody,
+    note:
+      'Danish speech recognition weights by RyeAI, used for on-device Danish ' +
+      'dictation. Codictate downloads the q5_0 GGUF unchanged from its mirror at ' +
+      'huggingface.co/emillykkegrann/ekko-v1-tiny-GGUF. Licensed by NVIDIA ' +
+      "Corporation under the NVIDIA Open Model License. RyeAI's modifications " +
+      'are under CC BY 4.0, and the CoRal restrictions and the FT Speech terms ' +
+      'also apply.',
+  },
+  {
+    name: 'parakeet.cpp',
+    copyright: 'Copyright (c) 2026 the parakeet.cpp authors',
+    licenseType: 'MIT License',
+    licenseUrl: 'https://github.com/mudler/parakeet.cpp/blob/v0.6.1/LICENSE',
+    projectUrl: 'https://github.com/mudler/parakeet.cpp',
+    note:
+      'On-device speech recognition runtime for the Danish ekko speech model, ' +
+      'linked as an xcframework with its own copy of ggml (Copyright (c) ' +
+      '2023-2026 The ggml authors, MIT License).',
+  },
+  {
+    name: 'ekko-pnc',
+    copyright:
+      'Copyright RyeAI. Derived from jonfd/electra-small-nordic (CC BY 4.0)',
+    licenseType: 'CC BY 4.0 + CoRal restrictions',
+    licenseUrl:
+      'https://huggingface.co/emillykkegrann/ekko-pnc-ONNX/blob/44b0483333423a31d36907f1d71dee7e71045a42/MODEL_LICENSE.md',
+    projectUrl: 'https://huggingface.co/RyeAI/ekko-pnc',
+    noticeUrl:
+      'https://huggingface.co/emillykkegrann/ekko-pnc-ONNX/blob/44b0483333423a31d36907f1d71dee7e71045a42/NOTICE',
+    noticeBody: ekkoPncNoticeBody,
+    note:
+      'Danish punctuation model by RyeAI (Ekko PnC v2), used to add ' +
+      'punctuation and capitals to what the ekko speech model writes. ' +
+      'Codictate downloads it unchanged from its mirror at ' +
+      'huggingface.co/emillykkegrann/ekko-pnc-ONNX. Licensed under CC BY 4.0, ' +
+      'subject to the CoRal restrictions in section 4 of its CORAL-LICENSE.',
+  },
+  {
+    name: 'ONNX Runtime',
+    copyright: 'Copyright (c) Microsoft Corporation',
+    licenseType: 'MIT License',
+    licenseUrl: 'https://github.com/microsoft/onnxruntime/blob/v1.30.0/LICENSE',
+    projectUrl: 'https://github.com/microsoft/onnxruntime',
+    noticeUrl:
+      'https://github.com/microsoft/onnxruntime/blob/v1.30.0/ThirdPartyNotices.txt',
+    note: 'On-device runtime for the ekko-pnc punctuation model.',
   },
   {
     name: 'NVIDIA Parakeet TDT v3',

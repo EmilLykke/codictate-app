@@ -7,7 +7,7 @@
  *
  * During prebuild this plugin:
  *  1. Copies extension sources from targets/CodictateDictationKeyboard/ to ios/.
- *  2. Copies WhisperBridge.h / CohereBridge.h into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
+ *  2. Copies the Obj-C++ bridge headers (WhisperBridge.h, CohereBridge.h, EkkoBridge.h, ...) into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
  *  3. Copies other targets/codictateapp/*.swift into ios/codictateapp/ (not KeyboardHostRecorder; see 4).
  *  4. Injects targets/codictateapp/KeyboardHostRecorder.swift into AppDelegate.swift (app target).
  *  5. Patches AppDelegate for codictateapp://keyboard-record and for background
@@ -625,6 +625,18 @@ function syncKeyboardExtensionAndWireHostTranscription(
     );
     ensureSourceFileBuiltByMainAppTarget(
       project,
+      `${appTargetName}/EkkoBridge.mm`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/EkkoPncBridge.mm`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
       `${appTargetName}/ModelManager.swift`,
       hostSourceGroup,
       appUuid,
@@ -668,6 +680,48 @@ function syncKeyboardExtensionAndWireHostTranscription(
     ensureSourceFileBuiltByMainAppTarget(
       project,
       `${appTargetName}/CohereEngine.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/AudioSlicer.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/EkkoEngine.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/PythonText.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/EkkoPnc.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/EkkoPncTokenizer.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/EkkoPncModel.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/PunctuationRestorer.swift`,
       hostSourceGroup,
       appUuid,
     );
@@ -824,6 +878,8 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
           "WhisperBridge.h",
           "CohereBridge.h",
           "S1MiniBridge.h",
+          "EkkoBridge.h",
+          "EkkoPncBridge.h",
         ]) {
           if (bridging.includes(header)) continue;
           bridging = `${bridging.trimEnd()}\n\n#import "${header}"\n`;

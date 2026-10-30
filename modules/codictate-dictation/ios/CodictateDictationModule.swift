@@ -373,8 +373,7 @@ public final class CodictateDictationModule: Module {
                 Self.requestReadinessRecompute()
                 return
             }
-            guard let path = AppGroupModelManager.shared.modelFilePath(for: variant) else { return }
-            try? FileManager.default.removeItem(atPath: path)
+            AppGroupModelManager.shared.deleteFiles(for: variant)
             Self.requestReadinessRecompute()
         }
 
@@ -393,9 +392,8 @@ public final class CodictateDictationModule: Module {
                             }
                         }
                     }
-                } else if let path = AppGroupModelManager.shared.modelFilePath(for: variant),
-                          let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
-                    size = (attrs[.size] as? Int64) ?? 0
+                } else {
+                    size = AppGroupModelManager.shared.installedBytes(for: variant)
                 }
                 return [
                     "variant": variant.rawValue,

@@ -1,6 +1,6 @@
 # codictate-app
 
-Expo + React Native iOS app. On-device speech-to-text with two ASR engines: Parakeet TDT v3 (primary, Neural Engine) and Whisper base-q5_1 (CPU fallback). No cloud transcription.
+Expo + React Native iOS app. On-device speech-to-text with four ASR engines: Parakeet TDT v3 (primary, Neural Engine, FluidAudio), Whisper base (crispasr), the Danish hviske (crispasr) and the Danish ekko (parakeet.cpp, always followed by the ekko-pnc Punctuation Model on ONNX Runtime). No cloud transcription.
 
 ## Building
 
@@ -26,11 +26,13 @@ bun run ios            # expo run:ios
 - `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button (trigger-only, does not run ASR models)
 - `AudioRecordingIntent` -- Action Button / Shortcuts
 
-**Recording flow:** keyboard/intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to either `ParakeetEngine` or `WhisperEngine`, writes transcript back to App Group.
+**Recording flow:** keyboard/intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to `ParakeetEngine`, `WhisperEngine`, `CohereEngine` or `EkkoEngine` (ekko's text then goes through `PunctuationRestorer`), runs S1-mini formatting when eligible, writes transcript back to App Group.
 
 **ASR engines (TranscriptionEngine protocol):**
 - `ParakeetEngine` -- wraps FluidAudio's `AsrManager`. Uses `AsrModels.downloadAndLoad(version: .v3)` for model management. Runs on Neural Engine via CoreML.
 - `WhisperEngine` -- wraps the existing `WhisperBridge` (ObjC++). Loads `ggml-base-q5_1.bin` from the App Group container. CPU-only.
+- `CohereEngine` -- wraps `CohereBridge` (ObjC++) on crispasr's cohere backend. Runs the Danish hviske GGUF.
+- `EkkoEngine` -- wraps `EkkoBridge` (ObjC++) on parakeet.cpp's C API. Runs the Danish ekko GGUF slice by slice (`AudioSlicer`), Metal on device, CPU on the simulator. Its Raw Transcript is lowercase and unpunctuated, so the router always passes it through `PunctuationRestorer` (ekko-pnc on ONNX Runtime via `EkkoPncBridge`), which never fails a Dictation. Loaded while the user speaks, like Parakeet.
 
 Engine selection is stored in UserDefaults under `preferredModelVariant` (App Group). Default is `parakeet`. The `TranscriptionRouter` class in `KeyboardHostRecorder.swift` reads this preference and dispatches to the correct engine.
 
@@ -40,8 +42,11 @@ Engine selection is stored in UserDefaults under `preferredModelVariant` (App Gr
 |---|---|---|---|---|
 | `parakeet` | Parakeet TDT v3 (FluidAudio) | FluidAudio's internal CoreML cache | ~500 MB | Neural Engine |
 | `base` | Whisper base-q5_1 | `ggml-base-q5_1.bin` (App Group) | ~57 MB | CPU |
+| `base_en` | Whisper base.en-q5_1 | `ggml-base.en-q5_1.bin` (App Group) | ~57 MB | CPU |
+| `hviske` | hviske-v5-tiny q5_0 (crispasr) | `hviske-v5-tiny-q5_0.gguf` (App Group) | ~181 MB | GPU (Metal) |
+| `ekko` | ekko-v1-tiny q5_0 (parakeet.cpp) + ekko-pnc (ONNX Runtime) | `ekko-v1-tiny-q5_0.gguf` + `ekko-pnc/` (App Group) | ~152 MB | GPU (Metal) + CPU |
 
-Parakeet models are downloaded by `ParakeetModelManager` via FluidAudio's `AsrModels.downloadAndLoad(version: .v3)`. A `parakeetModelReady` flag in UserDefaults (App Group) persists across launches. Whisper models are downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container.
+Parakeet models are downloaded by `ParakeetModelManager` via FluidAudio's `AsrModels.downloadAndLoad(version: .v3)`. A `parakeetModelReady` flag in UserDefaults (App Group) persists across launches. Whisper models are downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container. ekko downloads its GGUF and ekko-pnc's three runtime files from their Mirrors at pinned commits, all at once with one progress value, and installs a file only if its size and sha256 match the pin. It is ready only with all four on disk, and deleting it deletes both parts.
 
 ## FluidAudio SPM dependency
 
@@ -53,8 +58,11 @@ The engine abstraction lives in `targets/codictateapp/`:
 - `TranscriptionEngine.swift` -- protocol with `func transcribe(wavPath: String) async throws -> String`
 - `ParakeetEngine.swift` -- FluidAudio wrapper + `ParakeetModelManager`
 - `WhisperEngine.swift` -- WhisperBridge wrapper
+- `CohereEngine.swift` -- CohereBridge wrapper (hviske)
+- `EkkoEngine.swift` -- EkkoBridge wrapper (ekko), with `AudioSlicer.swift`
+- `PunctuationRestorer.swift` -- ekko-pnc, with `EkkoPnc.swift`, `EkkoPncTokenizer.swift`, `EkkoPncModel.swift`, `PythonText.swift` and `EkkoPncBridge`
 
-These are compiled into the main app target by the `withKeyboardExtension` config plugin (see `ensureSourceFileBuiltByMainAppTarget` calls).
+These are compiled into the main app target by the `withKeyboardExtension` config plugin (see `ensureSourceFileBuiltByMainAppTarget` calls). A new Obj-C++ bridge header also goes in that plugin's bridging-header list.
 
 ## ModelManager -- three files that must stay in sync
 
@@ -81,7 +89,7 @@ The Expo module cannot import FluidAudio directly. Model download is coordinated
 
 ## ModelManager -- cross-module download flow
 
-The file-backed Speech Models (`base`, `base_en`, `hviske`) use the same shape, for a
+The file-backed Speech Models (`base`, `base_en`, `hviske`, `ekko`) use the same shape, for a
 different reason: **the Expo module must never own a background `URLSession`.** iOS
 relaunches a terminated app to finish a background download without initialising React
 Native, so a session attached from the module's `OnCreate` is never recreated on the one
@@ -129,12 +137,14 @@ Running `bun install` re-copies automatically, but won't happen mid-session.
 ## Domain docs
 
 `GLOSSARY.md` is the glossary for this app's domain terms (Dictation turn, Warm path, Speech
-Model, ASR Harness, Language Lock, Dictation Readiness). Use those terms in code and docs.
+Model, ASR Harness, Language Lock, Punctuation Restoration, Dictation Readiness). Use those terms in code and docs.
 Architectural decisions and their rejected alternatives live in `docs/adr/`:
 
 | ADR | Decision |
 |---|---|
 | `0001-crispasr-as-the-ios-asr-harness.md` | crispasr replaces `whisper.rn` as the ASR Harness, unlocking the Danish hviske Speech Model. FluidAudio keeps Parakeet |
+| `0002-s1-mini-for-optional-english-cleanup.md` | S1-mini is the optional English Formatting Model |
+| `0003-parakeet-cpp-and-onnx-runtime-for-ekko.md` | parakeet.cpp, built from source as a dynamic framework, runs the Danish ekko beside hviske; ONNX Runtime runs its Punctuation Model ekko-pnc |
 
 ## Linting / type checking
 

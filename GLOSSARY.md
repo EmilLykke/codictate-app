@@ -41,7 +41,7 @@ Independent toggle via `AudioRecordingIntent`. Starting Action Button dictation 
 ## Speech Model
 
 One set of ASR weights the user can select, together with its id, its download and its
-declared capabilities. `parakeet`, `base`, `base_en` and `hviske` are Speech Models.
+declared capabilities. `parakeet`, `base`, `base_en`, `hviske` and `ekko` are Speech Models.
 _Avoid_: model variant, engine (a Speech Model is not the runtime that executes it).
 
 ## Formatting Model
@@ -54,15 +54,17 @@ content calls for a list and otherwise returns prose. Structure is not a user se
 ## ASR Harness
 
 The runtime library that loads a Speech Model's weights and produces a transcript.
-Codictate iOS has one, **crispasr**, linked as an xcframework. FluidAudio is the
-exception: Parakeet runs on Core ML through FluidAudio's own `AsrManager`, not on the
-Harness. Harness is internal vocabulary and never appears in user-facing copy.
+Codictate iOS has two, each linked as an xcframework: **crispasr** runs `base`, `base_en`
+and `hviske`, and **parakeet.cpp** runs `ekko`, whose GGUF crispasr cannot read. FluidAudio
+is the exception: Parakeet runs on Core ML through FluidAudio's own `AsrManager`, not on a
+Harness. ONNX Runtime, which runs the Punctuation Model, is not a Harness either: it
+recognises no speech. Harness is internal vocabulary and never appears in user-facing copy.
 _Avoid_: backend, engine, whisper.cpp (the last is a Harness implementation detail).
 
 ## Language Lock
 
 A Speech Model's declaration of which Transcription Languages it accepts. `hviske`
-locks to Danish, `base_en` to English, `parakeet` locks to automatic because it takes
+and `ekko` lock to Danish, `base_en` to English, `parakeet` locks to automatic because it takes
 no language input at all, and `base` accepts the full list. A Locked Speech Model
 disables the languages it cannot run rather than silently ignoring a selection,
 because feeding a Speech Model a language it does not support yields a fluent
@@ -72,6 +74,27 @@ Auto-detect is the absence of a choice, not a conflicting one: a Locked Speech M
 accepts it and runs its pinned language, resolved once in the Host before any engine
 sees it. `languageUnsupportedByModel` therefore fires only on a language the user
 picked explicitly, such as French while hviske is the Speech Model.
+
+## Raw Transcript
+
+The text a Speech Model produced, before any rewriting. ekko's is lowercase with no
+punctuation.
+
+## Punctuation Restoration
+
+Adding punctuation and capital letters to a Raw Transcript, never removing a capital and
+never changing, adding or removing any word. Danish only. On iOS it is always applied to
+`ekko`, whose Raw Transcript has neither, and to no other Speech Model (iOS has no Add
+punctuation switch for hviske). It runs in the Host on the Raw Transcript before S1-mini
+formatting. It never fails a Dictation turn: on any fault the words are delivered as the
+Speech Model wrote them, with no error. Not a Formatting Model: it does not rewrite.
+
+## Punctuation Model
+
+The weights that perform Punctuation Restoration (ekko-pnc), run on ONNX Runtime.
+Distinct from a Speech Model, which recognises speech, and a Formatting Model, which
+rewrites text. On iOS it is part of `ekko`'s download rather than a choice of its own:
+`ekko` is ready only with it installed, and deleting `ekko` deletes it.
 
 ## Dictation Readiness
 

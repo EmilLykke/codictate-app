@@ -30,7 +30,7 @@ export type StateChangeEvent = {
 export type TranscriptEvent = { transcript: string };
 export type ErrorEvent = { message: string };
 
-export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske";
+export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske" | "ekko";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
@@ -203,6 +203,7 @@ const KNOWN_VARIANTS: ModelVariant[] = [
   "base",
   "base_en",
   "hviske",
+  "ekko",
 ];
 
 export async function getPreferredModel(): Promise<ModelVariant> {

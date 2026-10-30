@@ -72,10 +72,25 @@ export const SPEECH_MODELS: readonly SpeechModel[] = [
     label: 'Hviske V5 Tiny Q5',
     meta: '~181 MB',
     sizeMb: '181',
-    description: 'Danish only. Best Danish accuracy, 11.3 WER.',
+    description: 'Danish only. 11.3 WER.',
     acceptedLanguageIds: ['da'],
     lockNote:
       'Hviske V5 Tiny Q5 transcribes Danish only. Auto-detect runs as Danish.',
+  },
+  {
+    // The size is the GGUF (134,710,976 bytes) plus the ekko-pnc runtime files
+    // (24,726,887 bytes), 152 MiB: downloading ekko also fetches the Punctuation
+    // Model, which always runs on its lowercase, unpunctuated Raw Transcript.
+    // Both WERs are desktop's FLEURS da_dk Benchmark Runs on the Raw Transcript.
+    variant: 'ekko',
+    label: 'Ekko V1 Tiny Q5',
+    meta: '~152 MB',
+    sizeMb: '152',
+    description:
+      'Danish only. Best Danish accuracy, adds punctuation, 9.9 WER.',
+    acceptedLanguageIds: ['da'],
+    lockNote:
+      'Ekko V1 Tiny Q5 transcribes Danish only. Auto-detect runs as Danish.',
   },
 ]
 
