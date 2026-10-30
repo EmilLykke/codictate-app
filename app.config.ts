@@ -4,6 +4,8 @@ import withKeyboardExtension from "./plugins/withKeyboardExtension";
 import withFluidAudio from "./plugins/withFluidAudio";
 import withCrispASR from "./plugins/withCrispASR";
 import withLlama from "./plugins/withLlama";
+import withParakeetCpp from "./plugins/withParakeetCpp";
+import withOnnxRuntime from "./plugins/withOnnxRuntime";
 
 const config: ExpoConfig = {
   name: "Codictate",
@@ -118,7 +120,10 @@ const config: ExpoConfig = {
 // wrapper here runs its mods last. withCrispASR must run after
 // withKeyboardExtension, which rewrites the app target's HEADER_SEARCH_PATHS and
 // FRAMEWORK_SEARCH_PATHS wholesale on every prebuild; withCrispASR appends the
-// crispasr entries to whatever it leaves behind.
+// crispasr entries to whatever it leaves behind. withParakeetCpp and
+// withOnnxRuntime (ekko and ekko-pnc) sit inside it for the same reason.
 export default withFluidAudio(
-  withKeyboardExtension(withCrispASR(withLlama(config))),
+  withKeyboardExtension(
+    withCrispASR(withLlama(withParakeetCpp(withOnnxRuntime(config)))),
+  ),
 );
