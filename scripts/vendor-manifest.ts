@@ -122,15 +122,21 @@ export const PARAKEET_STAMP = `${PARAKEET_VERSION} ${PARAKEET_XCFRAMEWORK_ARCHIV
 // CocoaPods archive; its xcframework is a *static* framework, so it is linked
 // into the app binary and never embedded.
 //
-// Microsoft publishes no checksum for the 1.30.0 pod archive: the SPM
-// Package.swift (microsoft/onnxruntime-swift-package-manager) stops at 1.24.2,
-// whose pinned checksum f7100a99...0b54 does match download.onnxruntime.ai. This
-// sha256 was taken from download.onnxruntime.ai on 2026-10-30 and pins that
-// download from here on.
+// The archive is hosted on a vendor-scoped prerelease of this repo, because
+// download.onnxruntime.ai stopped serving it (2026-11-24: a certificate for
+// *.azureedge.net, then 404). The zip holds only the iOS slices, extracted on
+// 2026-10-30 from Microsoft's pod-archive-onnxruntime-c-1.30.0.zip, which was
+// verified against sha256 e6f1670c...a2ea. Microsoft published no checksum for
+// that archive. The SPM Package.swift (microsoft/onnxruntime-swift-package-manager)
+// stops at 1.24.2, whose pinned checksum f7100a99...0b54 did match
+// download.onnxruntime.ai.
+// To bump: extract the iOS slices from Microsoft's new archive, zip
+// `onnxruntime.xcframework/`, upload it to a new `vendor-onnxruntime-<version>`
+// prerelease, then update these pins.
 export const ONNXRUNTIME_VERSION = "1.30.0";
-export const ONNXRUNTIME_ARCHIVE_URL = `https://download.onnxruntime.ai/pod-archive-onnxruntime-c-${ONNXRUNTIME_VERSION}.zip`;
+export const ONNXRUNTIME_ARCHIVE_URL = `https://github.com/EmilLykke/codictate-app/releases/download/vendor-onnxruntime-${ONNXRUNTIME_VERSION}/onnxruntime-${ONNXRUNTIME_VERSION}-ios-xcframework.zip`;
 export const ONNXRUNTIME_ARCHIVE_SHA256 =
-  "e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea";
+  "08b490a96d5660bab95a250c99453b5b5670d4c20b69f860f5022296ba691bf0";
 export const ONNXRUNTIME_XCFRAMEWORK_NAME = "onnxruntime.xcframework";
 /** The archive also has `macos-arm64_x86_64`, which the fetch drops. */
 export const ONNXRUNTIME_IOS_SLICES = [
