@@ -11,7 +11,7 @@ import withOnnxRuntime from "./plugins/withOnnxRuntime";
 const config: ExpoConfig = {
   name: "Codictate",
   slug: "codictate",
-  version: "1.0.3",
+  version: "1.0.4",
   orientation: "portrait",
   icon: "./assets/icon.iconset/icon_512x512@2x.png",
   scheme: "codictateapp",
