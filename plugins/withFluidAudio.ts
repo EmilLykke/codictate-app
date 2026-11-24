@@ -159,8 +159,8 @@ const withFluidAudio: ConfigPlugin = (config) => {
     ) {
       linked.push("app");
     }
-    // withKeyboardExtension adds the keyboard target; this plugin wraps it in
-    // app.config.ts, so its mod runs after the target exists.
+    // withKeyboardExtension adds the keyboard target; this plugin sits inside it in
+    // app.config.ts, and Expo runs inner plugins' mods later, so the target exists here.
     const keyboardUuid = findKeyboardTargetUuid(project);
     if (!keyboardUuid) {
       console.warn(

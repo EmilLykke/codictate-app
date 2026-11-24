@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AppState, type AppStateStatus } from 'react-native'
+import { AppState } from 'react-native'
 import * as Haptics from 'expo-haptics'
 import {
   acknowledgeError,
@@ -55,7 +55,7 @@ export function useRealtimeDictation(): RealtimeDictation {
   const [transcript, setTranscript] = useState<string | null>(null)
   const [dictError, setDictError] = useState<string | null>(null)
 
-  const lastAppStateRef = useRef<AppStateStatus>(AppState.currentState)
+  const lastAppStateRef = useRef(AppState.currentState)
 
   const flushPending = useCallback(async () => {
     try {

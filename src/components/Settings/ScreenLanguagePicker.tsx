@@ -92,7 +92,7 @@ export function LanguagePickerContent({
   const keyExtractor = useCallback((item: Row) => item.id, [])
 
   const header =
-    lockNote == null ? null : (
+    lockNote == null ? undefined : (
       <Text style={styles.lockNote} selectable>
         {lockUnmet && pinnedId != null
           ? `${lockNote} ${conflictHint(pinnedId)}`

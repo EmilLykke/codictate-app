@@ -8,10 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import type {
-  NativeSyntheticEvent,
-  TextInputSelectionChangeEventData,
-} from 'react-native'
+import type { TextInputSelectionChangeEvent } from 'react-native'
 import { appColors, appFontFamily, appFontSize } from '@/constants/AppColors'
 
 const INPUT_ACCESSORY_ID = 'dictation-composer'
@@ -25,9 +22,7 @@ type CardDictationComposerProps = {
   value: string
   selection: TextSelection
   onChangeText: (text: string) => void
-  onSelectionChange: (
-    event: NativeSyntheticEvent<TextInputSelectionChangeEventData>
-  ) => void
+  onSelectionChange: (event: TextInputSelectionChangeEvent) => void
   onCopyPress: () => void
   onSharePress: () => void
   onClearPress: () => void

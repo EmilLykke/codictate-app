@@ -10,8 +10,9 @@
  *  2. Copies the Obj-C++ bridge headers (WhisperBridge.h, CohereBridge.h, EkkoBridge.h, ...) into ios/codictateapp/ and patches codictateapp-Bridging-Header.h.
  *  3. Copies other targets/codictateapp/*.swift into ios/codictateapp/ (not KeyboardHostRecorder; see 4).
  *  4. Injects targets/codictateapp/KeyboardHostRecorder.swift into AppDelegate.swift (app target).
- *  5. Patches AppDelegate for codictateapp://keyboard-record and for background
- *     URLSession events (Speech Model downloads that finish while the app is away).
+ *  5. Patches AppDelegate (bootstrap on every launch, codictateapp://keyboard-record and
+ *     keyboard-session, background URLSession events for Speech Model downloads) and
+ *     SceneDelegate (React Native starts only in the foreground; host links stay native).
  *  6. Adds App Group entitlement, keyboard extension (Swift-only; FluidAudio via withFluidAudio), links the ASR bridges + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
  *
  * All Xcode edits live in this plugin only. Do not hand-edit ios/*.xcodeproj; prebuild regenerates ios/.
@@ -48,7 +49,7 @@ const EXTENSION_SOURCES = [
   "KeyboardParakeet.swift",
 ];
 
-/** Removed from the extension target on each prebuild sync (legacy layout). */
+/** Dropped from the extension's Sources phase when a legacy layout still compiles them there. */
 const REMOVED_FROM_EXTENSION_SOURCES = [
   "WhisperBridge.mm",
   "AudioRecorder.swift",
@@ -573,6 +574,40 @@ function ensureSourceFileBuiltByMainAppTarget(
   project.addToPbxSourcesBuildPhase(file);
 }
 
+/**
+ * Drops REMOVED_FROM_EXTENSION_SOURCES from the extension's Sources phase only. node-xcode's
+ * `removeSourceFile` matches build files and file references by basename across the whole
+ * project, so on a prebuild without --clean it also tore out the main app's WhisperBridge.mm
+ * and ModelManager.swift, leaving dangling phase entries and duplicate references.
+ */
+function removeLegacyExtensionSources(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  project: any,
+  extUuid: string,
+): void {
+  const phaseUuid = findSourcesBuildPhaseForTarget(project, extUuid);
+  if (!phaseUuid) return;
+  const phase = project.hash.project.objects.PBXSourcesBuildPhase[phaseUuid];
+  if (!phase?.files) return;
+  const buildFiles = project.pbxBuildFileSection() ?? {};
+  const fileRefs = project.pbxFileReferenceSection() ?? {};
+  phase.files = phase.files.filter((entry: { value: string }) => {
+    const bf = buildFiles[entry.value] as { fileRef?: string } | undefined;
+    const ref = bf?.fileRef ? fileRefs[bf.fileRef] : undefined;
+    const refPath = (
+      (ref as { path?: string } | undefined)?.path ?? ""
+    ).replace(/^"|"$/g, "");
+    const legacy = REMOVED_FROM_EXTENSION_SOURCES.includes(
+      path.basename(refPath),
+    );
+    if (legacy) {
+      delete buildFiles[entry.value];
+      delete buildFiles[`${entry.value}_comment`];
+    }
+    return !legacy;
+  });
+}
+
 /** Strip legacy Whisper/mic sources from the extension; attach them to the app; fix build settings. */
 function syncKeyboardExtensionAndWireHostTranscription(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -582,13 +617,7 @@ function syncKeyboardExtensionAndWireHostTranscription(
   const extGroupKey = findKeyboardExtensionGroupKey(project);
 
   if (extUuid && extGroupKey) {
-    for (const filename of REMOVED_FROM_EXTENSION_SOURCES) {
-      try {
-        project.removeSourceFile(filename, { target: extUuid }, extGroupKey);
-      } catch {
-        /* not present */
-      }
-    }
+    removeLegacyExtensionSources(project, extUuid);
 
     for (const filename of EXTENSION_SOURCES) {
       project.addSourceFile(filename, { target: extUuid }, extGroupKey);
@@ -818,6 +847,221 @@ function patchKeyboardExtensionBuildSettings(
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AppDelegate + SceneDelegate (Expo SDK 58 scene life cycle)
+// ---------------------------------------------------------------------------
+//
+// SDK 58 generates AppDelegate.swift (creates the React Native factory) and
+// SceneDelegate.swift (`ExpoAppSceneDelegate`, which creates the window, starts
+// React Native and re-feeds URL / life-cycle events to the AppDelegate). The
+// patches below anchor on that template and throw when an anchor is missing, so a
+// template change fails prebuild instead of shipping a Host that silently lost its
+// Cold path deep link, background launch guard or download relaunch hook.
+
+const HOST_DEEP_LINK_MARKER = "static func handleHostDeepLink(";
+const BACKGROUND_URL_SESSION_MARKER = "handleEventsForBackgroundURLSession";
+const SCENE_DEFERRAL_MARKER = "pendingConnection";
+
+/** Swift added to AppDelegate: the Host's native-only deep links and the download relaunch hook. */
+const APP_DELEGATE_METHODS = `
+
+  // MARK: - Host deep links
+
+  /// Linking API. Under the scene life cycle UIKit calls no app-delegate URL method;
+  /// \`ExpoAppSceneDelegate\` re-feeds each link here instead: a cold launch's link from its
+  /// connection options, a warm one through \`SceneDelegate.scene(_:openURLContexts:)\`.
+  public override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    if Self.handleHostDeepLink(url) {
+      return true
+    }
+    return super.application(app, open: url, options: options)
+  }
+
+  /// Handles the Host's native-only links: the keyboard's Cold path
+  /// (\`codictateapp://keyboard-record\`) and a Live Activity tap (\`keyboard-session\`, or the
+  /// legacy \`dictation\`). They skip \`super\`, so expo-linking never records them as the
+  /// initial URL and Expo Router never tries to open them as a route.
+  static func handleHostDeepLink(_ url: URL) -> Bool {
+    guard url.scheme == "codictateapp" else { return false }
+    switch url.host {
+    case "keyboard-record":
+      KeyboardHostRecorder.shared.handleDeepLink()
+      return true
+    case "keyboard-session", "dictation":
+      KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()
+      return true
+    default:
+      return false
+    }
+  }
+
+  // MARK: - Background Speech Model downloads
+
+  /// iOS wakes the app when a background download finishes and hands over the
+  /// completion handler for that session. One download session runs in this
+  /// process, owned by \`ModelManager\` and attached from \`bootstrap()\` above, so the
+  /// handler is answered from its \`urlSessionDidFinishEvents\`. This stays an
+  /// app-delegate method under the scene life cycle and runs on a background relaunch
+  /// where React Native is never started, which is exactly why the Expo module owns no
+  /// session of its own. Any other identifier belongs to another library and goes to
+  /// Expo's own subscribers.
+  public override func application(
+    _ application: UIApplication,
+    handleEventsForBackgroundURLSession identifier: String,
+    completionHandler: @escaping () -> Void
+  ) {
+    guard BackgroundDownloadEvents.owns(sessionIdentifier: identifier) else {
+      super.application(
+        application,
+        handleEventsForBackgroundURLSession: identifier,
+        completionHandler: completionHandler)
+      return
+    }
+    BackgroundDownloadEvents.shared.store(completionHandler: completionHandler)
+  }`;
+
+/** Swift that replaces the SceneDelegate template's extension point. */
+const SCENE_DELEGATE_BODY = `  // The Host does not require React Native for keyboard or Action Button dictation, so
+  // React Native starts only when this scene first comes to the foreground. UIKit also
+  // connects a scene for a system-requested background launch (Action Button
+  // \`AudioRecordingIntent\`, a background download relaunch) and leaves it in the
+  // background; \`ExpoAppSceneDelegate\` would start React Native right away.
+  // \`KeyboardHostRecorder.bootstrap()\` runs from AppDelegate on every launch, scene or not.
+
+  private var pendingConnection: (session: UISceneSession, options: UIScene.ConnectionOptions)?
+
+  override func scene(
+    _ scene: UIScene,
+    willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions
+  ) {
+    NSLog("[SceneDelegate] willConnect app state=\\(UIApplication.shared.applicationState.rawValue)")
+    pendingConnection = (session, connectionOptions)
+  }
+
+  override func sceneWillEnterForeground(_ scene: UIScene) {
+    connectIfPending(scene)
+    super.sceneWillEnterForeground(scene)
+  }
+
+  override func sceneDidBecomeActive(_ scene: UIScene) {
+    connectIfPending(scene)
+    super.sceneDidBecomeActive(scene)
+  }
+
+  override func sceneDidDisconnect(_ scene: UIScene) {
+    pendingConnection = nil
+    super.sceneDidDisconnect(scene)
+  }
+
+  /// Warm links. The Host's native-only links stop here, as they did before the scene life
+  /// cycle; \`super\` would otherwise hand them to React Native's Linking as well, and
+  /// Expo Router would open \`/keyboard-record\` as a route.
+  override func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    let forReactNative = URLContexts.filter { !AppDelegate.handleHostDeepLink($0.url) }
+    guard !forReactNative.isEmpty else { return }
+    super.scene(scene, openURLContexts: forReactNative)
+  }
+
+  /// Runs Expo's connection: creates the window, starts React Native and re-feeds the
+  /// connection's links (a Cold path link reaches \`AppDelegate.application(_:open:options:)\`).
+  private func connectIfPending(_ scene: UIScene) {
+    guard let pending = pendingConnection else { return }
+    pendingConnection = nil
+    NSLog("[SceneDelegate] Scene entering the foreground - starting React Native")
+    super.scene(scene, willConnectTo: pending.session, options: pending.options)
+  }
+`;
+
+/** Inserts `text` just before the closing brace of `class AppDelegate`. */
+function insertIntoAppDelegateClass(source: string, text: string): string {
+  const classStart = source.search(/\nclass AppDelegate\b/);
+  const classEnd =
+    classStart === -1 ? -1 : source.indexOf("\n}\n", classStart + 1);
+  if (classEnd === -1) {
+    throw new Error(
+      "[withKeyboardExtension] AppDelegate.swift format unrecognized: no `class AppDelegate { ... }` block",
+    );
+  }
+  return source.slice(0, classEnd) + text + source.slice(classEnd);
+}
+
+function patchAppDelegate(source: string, recorderBody: string): string {
+  let ad = removeInjectedKeyboardHostRecorder(source);
+
+  if (ad.includes("didInitReactNative")) {
+    throw new Error(
+      "[withKeyboardExtension] AppDelegate.swift still has the pre-SDK 58 deferred React Native init. " +
+        "Run a clean prebuild (the default; drop --no-clean) so it is regenerated from the SDK 58 template.",
+    );
+  }
+
+  // Every launch, including a background one that never connects a scene: observers,
+  // the Parakeet migration, the background download session, stale state recovery.
+  if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
+    const anchor = "  ) -> Bool {\n    let delegate = ReactNativeDelegate()";
+    if (!ad.includes(anchor)) {
+      throw new Error(
+        "[withKeyboardExtension] AppDelegate.swift format unrecognized: cannot find didFinishLaunching creating ReactNativeDelegate",
+      );
+    }
+    ad = ad.replace(
+      anchor,
+      '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n\n    let delegate = ReactNativeDelegate()',
+    );
+    console.log(
+      "[withKeyboardExtension] Wired KeyboardHostRecorder.shared.bootstrap() into AppDelegate launch",
+    );
+  }
+
+  const hasDeepLinks = ad.includes(HOST_DEEP_LINK_MARKER);
+  const hasUrlSession = ad.includes(BACKGROUND_URL_SESSION_MARKER);
+  if (hasDeepLinks !== hasUrlSession) {
+    throw new Error(
+      "[withKeyboardExtension] AppDelegate.swift is half patched (host deep links xor background URLSession); run a clean prebuild",
+    );
+  }
+  if (!hasDeepLinks) {
+    if (/func application\(\s*_ app: UIApplication,\s*open url: URL/.test(ad)) {
+      throw new Error(
+        "[withKeyboardExtension] AppDelegate.swift already overrides application(_:open:options:); merge the host deep links into it",
+      );
+    }
+    ad = insertIntoAppDelegateClass(ad, APP_DELEGATE_METHODS);
+    console.log(
+      "[withKeyboardExtension] Injected host deep links + background URLSession handler into AppDelegate",
+    );
+  }
+
+  ad = ensureAppDelegateRecorderImports(ad);
+  return `${ad.trimEnd()}\n\n${KEYBOARD_HOST_INJECT_BEGIN}\n// Source of truth: targets/${HOST_SWIFT_SRC_DIR}/${HOST_RECORDER_FILE}\n${recorderBody}\n${KEYBOARD_HOST_INJECT_END}\n`;
+}
+
+function patchSceneDelegate(source: string): string {
+  if (source.includes(SCENE_DEFERRAL_MARKER)) return source;
+  const anchor = "  // Extension point for config plugins.\n";
+  if (
+    !/class SceneDelegate: ExpoAppSceneDelegate \{/.test(source) ||
+    !source.includes(anchor)
+  ) {
+    throw new Error(
+      "[withKeyboardExtension] SceneDelegate.swift format unrecognized: expected the SDK 58 `class SceneDelegate: ExpoAppSceneDelegate` template",
+    );
+  }
+  let sd = source.replace(anchor, `${anchor}\n${SCENE_DELEGATE_BODY}`);
+  if (!/^import UIKit$/m.test(sd)) {
+    sd = sd.replace(/^(internal import Expo\n)/m, "$1import UIKit\n");
+  }
+  console.log(
+    "[withKeyboardExtension] Patched SceneDelegate: React Native starts in the foreground only, host deep links stay native",
+  );
+  return sd;
+}
+
 const withKeyboardExtension: ConfigPlugin = (config) => {
   // Step 1: Copy source files from targets/ into ios/ during prebuild
   config = withDangerousMod(config, [
@@ -978,306 +1222,33 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
 
       const recorderSrcPath = path.join(hostSrcDir, HOST_RECORDER_FILE);
       const appDelegatePath = path.join(hostDestDir, "AppDelegate.swift");
-
-      if (fs.existsSync(appDelegatePath)) {
-        let ad = fs.readFileSync(appDelegatePath, "utf8");
-        ad = removeInjectedKeyboardHostRecorder(ad);
-
-        const hasKeyboardDeepLinkHandler = ad.includes(
-          "KeyboardHostRecorder.shared.handleDeepLink()",
-        );
-        if (!hasKeyboardDeepLinkHandler) {
-          const originalOpenURL = `  public override func application(
-    _ app: UIApplication,
-    open url: URL,
-    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
-  ) -> Bool {
-    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
-  }`;
-          const patchedOpenURL = `  public override func application(
-    _ app: UIApplication,
-    open url: URL,
-    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
-  ) -> Bool {
-    if url.scheme == "codictateapp" {
-      switch url.host {
-      case "keyboard-record":
-        KeyboardHostRecorder.shared.handleDeepLink()
-        return true
-      case "keyboard-session", "dictation":
-        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()
-        return true
-      default:
-        break
+      const sceneDelegatePath = path.join(hostDestDir, "SceneDelegate.swift");
+      for (const required of [
+        recorderSrcPath,
+        appDelegatePath,
+        sceneDelegatePath,
+      ]) {
+        if (!fs.existsSync(required)) {
+          throw new Error(`[withKeyboardExtension] Missing ${required}`);
+        }
       }
-    }
-    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
-  }`;
-
-          const patched = ad.replace(originalOpenURL, patchedOpenURL);
-          if (patched !== ad) {
-            ad = patched;
-            console.log(
-              "[withKeyboardExtension] Patched existing openURL handler in AppDelegate",
-            );
-          } else if (
-            ad.includes('url.host == "keyboard-record"') &&
-            !ad.includes('"keyboard-session"')
-          ) {
-            ad = ad.replace(
-              `    if url.scheme == "codictateapp", url.host == "keyboard-record" {
-      KeyboardHostRecorder.shared.handleDeepLink()
-      return true
-    }`,
-              `    if url.scheme == "codictateapp" {
-      switch url.host {
-      case "keyboard-record":
-        KeyboardHostRecorder.shared.handleDeepLink()
-        return true
-      case "keyboard-session", "dictation":
-        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()
-        return true
-      default:
-        break
-      }
-    }`,
-            );
-            console.log(
-              "[withKeyboardExtension] Upgraded AppDelegate openURL to keyboard-session + dictation alias",
-            );
-          } else {
-            // Inject before AppDelegate class ends (never into ReactNativeDelegate).
-            const injectedMethod = [
-              "",
-              "  public override func application(",
-              "    _ app: UIApplication,",
-              "    open url: URL,",
-              "    options: [UIApplication.OpenURLOptionsKey: Any] = [:]",
-              "  ) -> Bool {",
-              '    if url.scheme == "codictateapp" {',
-              "      switch url.host {",
-              '      case "keyboard-record":',
-              "        KeyboardHostRecorder.shared.handleDeepLink()",
-              "        return true",
-              '      case "keyboard-session", "dictation":',
-              "        KeyboardHostRecorder.shared.handleKeyboardSessionDeepLink()",
-              "        return true",
-              "      default:",
-              "        break",
-              "      }",
-              "    }",
-              "    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)",
-              "  }",
-              "",
-            ].join("\n");
-            const reactNativeDelegateIdx = ad.indexOf(
-              "class ReactNativeDelegate",
-            );
-            const appDelegateSectionEnd =
-              reactNativeDelegateIdx !== -1
-                ? reactNativeDelegateIdx
-                : ad.length;
-            const appDelegateSection = ad.slice(0, appDelegateSectionEnd);
-            const appDelegateCloseBrace = appDelegateSection.lastIndexOf("\n}");
-            if (appDelegateCloseBrace !== -1) {
-              ad =
-                ad.slice(0, appDelegateCloseBrace) +
-                injectedMethod +
-                ad.slice(appDelegateCloseBrace);
-              console.log(
-                "[withKeyboardExtension] Injected openURL handler into AppDelegate (no existing method found)",
-              );
-            } else {
-              console.warn(
-                "[withKeyboardExtension] Could not inject openURL handler - AppDelegate format unrecognized",
-              );
-            }
-          }
-        }
-
-        // Deferred React Native init: skip RN setup when cold-launched in background
-        // for AudioRecordingIntent, then initialize on first foreground activation.
-        if (!ad.includes("applicationState == .background")) {
-          // 1. Add didInitReactNative flag after existing properties.
-          ad = ad.replace(
-            "  var reactNativeFactory: RCTReactNativeFactory?\n",
-            "  var reactNativeFactory: RCTReactNativeFactory?\n  private var didInitReactNative = false\n",
-          );
-
-          // 2. Guard didFinishLaunchingWithOptions: skip RN init, call helper instead.
-          ad = ad.replace(
-            "  ) -> Bool {\n    let delegate = ReactNativeDelegate()",
-            '  ) -> Bool {\n    NSLog("[AppDelegate] didFinishLaunching state=\\(application.applicationState.rawValue)")\n    KeyboardHostRecorder.shared.bootstrap()\n    if application.applicationState == .background {\n      NSLog("[AppDelegate] Background launch - deferring React Native init")\n      return true\n    }\n    initReactNativeIfNeeded(application: application, launchOptions: launchOptions)\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }',
-          );
-
-          // Remove the original inline RN init block + return super (now in helper + above).
-          ad = ad.replace(
-            '    let factory = ExpoReactNativeFactory(delegate: delegate)\n    delegate.dependencyProvider = RCTAppDependencyProvider()\n\n    reactNativeDelegate = delegate\n    reactNativeFactory = factory\n\n#if os(iOS) || os(tvOS)\n    window = UIWindow(frame: UIScreen.main.bounds)\n    factory.startReactNative(\n      withModuleName: "main",\n      in: window,\n      launchOptions: launchOptions)\n#endif\n\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }',
-            "",
-          );
-
-          // Remove old bootstrap placement to avoid duplicate
-          ad = ad.replace(
-            "\n    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(",
-            "\n    return super.application(",
-          );
-
-          // 3. Inject willFinishLaunchingWithOptions override.
-          if (!ad.includes("willFinishLaunchingWithOptions")) {
-            const willFinishMethod = [
-              "",
-              "  public override func application(",
-              "    _ application: UIApplication,",
-              "    willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil",
-              "  ) -> Bool {",
-              '    NSLog("[AppDelegate] willFinishLaunching state=\\(application.applicationState.rawValue)")',
-              "    if application.applicationState == .background { return true }",
-              "    return super.application(application, willFinishLaunchingWithOptions: launchOptions)",
-              "  }",
-              "",
-            ].join("\n");
-            const classEnd = ad.indexOf("\n}\n");
-            if (classEnd !== -1) {
-              ad =
-                ad.slice(0, classEnd) + willFinishMethod + ad.slice(classEnd);
-            }
-          }
-
-          // 4. Inject applicationDidBecomeActive override for deferred init.
-          if (!ad.includes("applicationDidBecomeActive")) {
-            const didBecomeActiveMethod = [
-              "",
-              "  override func applicationDidBecomeActive(_ application: UIApplication) {",
-              "    if !didInitReactNative {",
-              '      NSLog("[AppDelegate] Deferred React Native init on foreground activation")',
-              "      _ = super.application(application, willFinishLaunchingWithOptions: nil)",
-              "      initReactNativeIfNeeded(application: application, launchOptions: nil)",
-              "      _ = super.application(application, didFinishLaunchingWithOptions: nil)",
-              "    }",
-              "    super.applicationDidBecomeActive(application)",
-              "  }",
-              "",
-            ].join("\n");
-            const classEnd2 = ad.indexOf("\n}\n");
-            if (classEnd2 !== -1) {
-              ad =
-                ad.slice(0, classEnd2) +
-                didBecomeActiveMethod +
-                ad.slice(classEnd2);
-            }
-          }
-
-          // 5. Inject initReactNativeIfNeeded helper method.
-          if (!ad.includes("func initReactNativeIfNeeded")) {
-            const helperMethod = [
-              "",
-              "  private func initReactNativeIfNeeded(",
-              "    application: UIApplication,",
-              "    launchOptions: [UIApplication.LaunchOptionsKey: Any]?",
-              "  ) {",
-              "    guard !didInitReactNative else { return }",
-              "    didInitReactNative = true",
-              "",
-              "    let delegate = ReactNativeDelegate()",
-              "    let factory = ExpoReactNativeFactory(delegate: delegate)",
-              "    delegate.dependencyProvider = RCTAppDependencyProvider()",
-              "",
-              "    reactNativeDelegate = delegate",
-              "    reactNativeFactory = factory",
-              "",
-              "    #if os(iOS) || os(tvOS)",
-              "    window = UIWindow(frame: UIScreen.main.bounds)",
-              "    factory.startReactNative(",
-              '      withModuleName: "main",',
-              "      in: window,",
-              "      launchOptions: launchOptions)",
-              "    #endif",
-              "  }",
-              "",
-            ].join("\n");
-            const classEnd3 = ad.indexOf("\n}\n");
-            if (classEnd3 !== -1) {
-              ad = ad.slice(0, classEnd3) + helperMethod + ad.slice(classEnd3);
-            }
-          }
-
-          console.log(
-            "[withKeyboardExtension] Added background launch guards with deferred RN init in AppDelegate",
-          );
-        } else if (!ad.includes("KeyboardHostRecorder.shared.bootstrap()")) {
-          ad = ad.replace(
-            "    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
-            "    KeyboardHostRecorder.shared.bootstrap()\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n  }",
-          );
-          console.log(
-            "[withKeyboardExtension] Wired KeyboardHostRecorder.shared.bootstrap() into AppDelegate launch",
-          );
-        }
-
-        // Background Speech Model downloads. Without this hook iOS has no way to wake
-        // the app when a download finishes while it is suspended or terminated, so
-        // `sessionSendsLaunchEvents` on the download session would do nothing.
-        if (!ad.includes("handleEventsForBackgroundURLSession")) {
-          const backgroundSessionMethod = [
-            "",
-            "  // MARK: - Background Speech Model downloads",
-            "",
-            "  /// iOS wakes the app when a background download finishes and hands over the",
-            "  /// completion handler for that session. One download session runs in this",
-            "  /// process, owned by `ModelManager` and attached from `bootstrap()` above, so the",
-            "  /// handler is answered from its `urlSessionDidFinishEvents`. This runs on a",
-            "  /// background relaunch where React Native is never initialised, which is exactly",
-            "  /// why the Expo module owns no session of its own. Any other identifier belongs",
-            "  /// to another library and goes to Expo's own subscribers.",
-            "  public override func application(",
-            "    _ application: UIApplication,",
-            "    handleEventsForBackgroundURLSession identifier: String,",
-            "    completionHandler: @escaping () -> Void",
-            "  ) {",
-            "    guard BackgroundDownloadEvents.owns(sessionIdentifier: identifier) else {",
-            "      super.application(",
-            "        application,",
-            "        handleEventsForBackgroundURLSession: identifier,",
-            "        completionHandler: completionHandler)",
-            "      return",
-            "    }",
-            "    BackgroundDownloadEvents.shared.store(completionHandler: completionHandler)",
-            "  }",
-            "",
-          ].join("\n");
-          const classEnd4 = ad.indexOf("\n}\n");
-          if (classEnd4 !== -1) {
-            ad =
-              ad.slice(0, classEnd4) +
-              backgroundSessionMethod +
-              ad.slice(classEnd4);
-            console.log(
-              "[withKeyboardExtension] Injected background URLSession handler into AppDelegate",
-            );
-          } else {
-            console.warn(
-              "[withKeyboardExtension] Could not inject background URLSession handler - AppDelegate format unrecognized",
-            );
-          }
-        }
-
-        if (fs.existsSync(recorderSrcPath)) {
-          const body = stripSwiftLeadingImports(
-            fs.readFileSync(recorderSrcPath, "utf8"),
-          );
-          ad = ensureAppDelegateRecorderImports(ad);
-          ad = `${ad.trimEnd()}\n\n${KEYBOARD_HOST_INJECT_BEGIN}\n// Source of truth: targets/${HOST_SWIFT_SRC_DIR}/${HOST_RECORDER_FILE}\n${body}\n${KEYBOARD_HOST_INJECT_END}\n`;
-          console.log(
-            "[withKeyboardExtension] Injected KeyboardHostRecorder into AppDelegate.swift",
-          );
-        } else {
-          console.warn(
-            `[withKeyboardExtension] Missing ${recorderSrcPath}; open-url handler may not compile.`,
-          );
-        }
-
-        fs.writeFileSync(appDelegatePath, ad);
-      }
+      const recorderBody = stripSwiftLeadingImports(
+        fs.readFileSync(recorderSrcPath, "utf8"),
+      );
+      fs.writeFileSync(
+        appDelegatePath,
+        patchAppDelegate(
+          fs.readFileSync(appDelegatePath, "utf8"),
+          recorderBody,
+        ),
+      );
+      console.log(
+        "[withKeyboardExtension] Injected KeyboardHostRecorder into AppDelegate.swift",
+      );
+      fs.writeFileSync(
+        sceneDelegatePath,
+        patchSceneDelegate(fs.readFileSync(sceneDelegatePath, "utf8")),
+      );
 
       const staleRecorderPath = path.join(hostDestDir, HOST_RECORDER_FILE);
       if (fs.existsSync(staleRecorderPath)) {
@@ -1299,111 +1270,6 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
       groups.push(APP_GROUP_ID);
     }
     c.modResults["com.apple.security.application-groups"] = groups;
-    return c;
-  });
-
-  // Step 3: Add the Xcode target
-  config = withXcodeProject(config, (c) => {
-    const project = c.modResults;
-
-    // Guard: don't add twice on repeated prebuild runs
-    const targets = project.pbxNativeTargetSection() ?? {};
-    const alreadyAdded = Object.values(targets).some((t) => {
-      if (typeof t !== "object" || t === null || !("name" in t)) return false;
-      const name = ((t as { name?: string }).name ?? "").replace(/^"|"$/g, "");
-      return name === EXT_NAME;
-    });
-    if (alreadyAdded) return c;
-
-    ensureXcodeDependencyInfrastructure(project);
-
-    // ------------------------------------------------------------------
-    // 3a. Add extension target
-    // ------------------------------------------------------------------
-    const extTarget = project.addTarget(
-      EXT_NAME,
-      "app_extension",
-      EXT_NAME, // subfolder name
-      EXT_BUNDLE_ID,
-    );
-    const extUuid: string = extTarget.uuid;
-
-    // `addTarget()` leaves buildPhases empty. Without dedicated phases,
-    // `addSourceFile` / `addFramework` match the *first* Sources/Frameworks
-    // phase in the project (the main app), so Swift never sees the bridging
-    // header and `WhisperBridge` is out of scope.
-    project.addBuildPhase([], "PBXSourcesBuildPhase", "Sources", extUuid);
-    project.addBuildPhase([], "PBXFrameworksBuildPhase", "Frameworks", extUuid);
-
-    // ------------------------------------------------------------------
-    // 3b. Create PBX group for the extension
-    //     The group has path = EXT_NAME, so file refs use just the filename.
-    // ------------------------------------------------------------------
-    let groupKey = project.findPBXGroupKey({ name: EXT_NAME });
-    if (!groupKey) {
-      groupKey = project.pbxCreateGroup(EXT_NAME, EXT_NAME);
-
-      // Attach to the project's main group
-      const mainGroupKey =
-        project.findPBXGroupKey({ name: c.modRequest.projectName }) ??
-        project.findPBXGroupKey({ name: "" });
-      if (mainGroupKey) {
-        const mainGroup = project.hash.project.objects.PBXGroup[mainGroupKey];
-        if (mainGroup?.children) {
-          mainGroup.children.push({ value: groupKey, comment: EXT_NAME });
-        }
-      }
-    }
-
-    // ------------------------------------------------------------------
-    // 3c. Extension sources: UI, bridge and the In-keyboard path (Whisper runs in the main app).
-    // ------------------------------------------------------------------
-    EXTENSION_SOURCES.forEach((filename) => {
-      project.addSourceFile(filename, { target: extUuid }, groupKey);
-    });
-
-    // Add Info.plist and entitlements to the group
-    project.addFile("Info.plist", groupKey, { target: extUuid });
-    project.addFile(`${EXT_NAME}.entitlements`, groupKey, { target: extUuid });
-
-    // ------------------------------------------------------------------
-    // 3d. Link frameworks
-    // ------------------------------------------------------------------
-    (["UIKit", "Foundation", "AVFoundation"] as const).forEach((fw) => {
-      ensureFrameworkLinked(project, `${fw}.framework`, extUuid);
-    });
-
-    // ------------------------------------------------------------------
-    // 3e. Build settings
-    // ------------------------------------------------------------------
-    const buildConfigs = project.pbxXCBuildConfigurationSection() ?? {};
-
-    Object.keys(buildConfigs).forEach((key) => {
-      const cfg = buildConfigs[key];
-      if (typeof cfg !== "object" || !cfg.buildSettings) return;
-
-      const bs = cfg.buildSettings;
-      if (bs.PRODUCT_NAME !== EXT_NAME && bs.PRODUCT_NAME !== `"${EXT_NAME}"`)
-        return;
-
-      bs.PRODUCT_BUNDLE_IDENTIFIER = `"${EXT_BUNDLE_ID}"`;
-      bs.IPHONEOS_DEPLOYMENT_TARGET = DEPLOYMENT_TARGET;
-      bs.TARGETED_DEVICE_FAMILY = '"1"';
-      bs.SWIFT_VERSION = "5.0";
-      bs.CLANG_ENABLE_MODULES = "YES";
-      bs.CLANG_ENABLE_OBJC_ARC = "YES";
-      bs.SKIP_INSTALL = "YES";
-      bs.GENERATE_INFOPLIST_FILE = "NO";
-
-      bs.INFOPLIST_FILE = `"$(SRCROOT)/${EXT_NAME}/Info.plist"`;
-      bs.CODE_SIGN_ENTITLEMENTS = `"$(SRCROOT)/${EXT_NAME}/${EXT_NAME}.entitlements"`;
-
-      bs.LD_RUNPATH_SEARCH_PATHS = '"$(inherited)"';
-      bs.HEADER_SEARCH_PATHS = ['"$(inherited)"'];
-      bs.FRAMEWORK_SEARCH_PATHS = ['"$(inherited)"'];
-      bs.OTHER_LDFLAGS = '"$(inherited)"';
-    });
-
     return c;
   });
 
@@ -1591,6 +1457,118 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
         );
       }
     }
+
+    return c;
+  });
+
+  // Step 3: Add the keyboard extension target. Registered last on purpose: Expo runs
+  // mods of the same type in reverse registration order, so this runs before every other
+  // xcodeproj mod above, and withFluidAudio (inside this plugin in app.config.ts) runs
+  // after it. A clean prebuild (the default since SDK 57) then finds the target in place
+  // for the source sync, the host dependency and the FluidAudio link.
+  config = withXcodeProject(config, (c) => {
+    const project = c.modResults;
+
+    // Guard: don't add twice on repeated prebuild runs
+    const targets = project.pbxNativeTargetSection() ?? {};
+    const alreadyAdded = Object.values(targets).some((t) => {
+      if (typeof t !== "object" || t === null || !("name" in t)) return false;
+      const name = ((t as { name?: string }).name ?? "").replace(/^"|"$/g, "");
+      return name === EXT_NAME;
+    });
+    if (alreadyAdded) return c;
+
+    ensureXcodeDependencyInfrastructure(project);
+
+    // ------------------------------------------------------------------
+    // 3a. Add extension target
+    // ------------------------------------------------------------------
+    const extTarget = project.addTarget(
+      EXT_NAME,
+      "app_extension",
+      EXT_NAME, // subfolder name
+      EXT_BUNDLE_ID,
+    );
+    const extUuid: string = extTarget.uuid;
+
+    // `addTarget()` leaves buildPhases empty. Without dedicated phases,
+    // `addSourceFile` / `addFramework` match the *first* Sources/Frameworks
+    // phase in the project (the main app), so Swift never sees the bridging
+    // header and `WhisperBridge` is out of scope.
+    project.addBuildPhase([], "PBXSourcesBuildPhase", "Sources", extUuid);
+    project.addBuildPhase([], "PBXFrameworksBuildPhase", "Frameworks", extUuid);
+
+    // ------------------------------------------------------------------
+    // 3b. Create PBX group for the extension
+    //     The group has path = EXT_NAME, so file refs use just the filename.
+    // ------------------------------------------------------------------
+    let groupKey = project.findPBXGroupKey({ name: EXT_NAME });
+    if (!groupKey) {
+      groupKey = project.pbxCreateGroup(EXT_NAME, EXT_NAME);
+
+      // Attach to the project's main group
+      const mainGroupKey =
+        project.findPBXGroupKey({ name: c.modRequest.projectName }) ??
+        project.findPBXGroupKey({ name: "" });
+      if (mainGroupKey) {
+        const mainGroup = project.hash.project.objects.PBXGroup[mainGroupKey];
+        if (mainGroup?.children) {
+          mainGroup.children.push({ value: groupKey, comment: EXT_NAME });
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 3c. Extension sources: UI, bridge and the In-keyboard path (Whisper runs in the main app).
+    // ------------------------------------------------------------------
+    EXTENSION_SOURCES.forEach((filename) => {
+      project.addSourceFile(filename, { target: extUuid }, groupKey);
+    });
+
+    // Add Info.plist and entitlements to the group
+    project.addFile("Info.plist", groupKey, { target: extUuid });
+    project.addFile(`${EXT_NAME}.entitlements`, groupKey, { target: extUuid });
+
+    // ------------------------------------------------------------------
+    // 3d. Link frameworks
+    // ------------------------------------------------------------------
+    (["UIKit", "Foundation", "AVFoundation"] as const).forEach((fw) => {
+      ensureFrameworkLinked(project, `${fw}.framework`, extUuid);
+    });
+
+    // ------------------------------------------------------------------
+    // 3e. Build settings
+    // ------------------------------------------------------------------
+    const buildConfigs = project.pbxXCBuildConfigurationSection() ?? {};
+
+    Object.keys(buildConfigs).forEach((key) => {
+      const cfg = buildConfigs[key];
+      if (typeof cfg !== "object" || !cfg.buildSettings) return;
+
+      const bs = cfg.buildSettings;
+      if (bs.PRODUCT_NAME !== EXT_NAME && bs.PRODUCT_NAME !== `"${EXT_NAME}"`)
+        return;
+
+      bs.PRODUCT_BUNDLE_IDENTIFIER = `"${EXT_BUNDLE_ID}"`;
+      bs.IPHONEOS_DEPLOYMENT_TARGET = DEPLOYMENT_TARGET;
+      bs.TARGETED_DEVICE_FAMILY = '"1"';
+      bs.SWIFT_VERSION = "5.0";
+      bs.CLANG_ENABLE_MODULES = "YES";
+      bs.CLANG_ENABLE_OBJC_ARC = "YES";
+      bs.SKIP_INSTALL = "YES";
+      bs.GENERATE_INFOPLIST_FILE = "NO";
+
+      bs.INFOPLIST_FILE = `"$(SRCROOT)/${EXT_NAME}/Info.plist"`;
+      bs.CODE_SIGN_ENTITLEMENTS = `"$(SRCROOT)/${EXT_NAME}/${EXT_NAME}.entitlements"`;
+
+      // Expo's own DEVELOPMENT_TEAM mod runs before this target exists.
+      if (c.ios?.appleTeamId) bs.DEVELOPMENT_TEAM = c.ios.appleTeamId;
+
+      bs.LD_RUNPATH_SEARCH_PATHS = '"$(inherited)"';
+      bs.HEADER_SEARCH_PATHS = ['"$(inherited)"'];
+      bs.FRAMEWORK_SEARCH_PATHS = ['"$(inherited)"'];
+      bs.OTHER_LDFLAGS = '"$(inherited)"';
+    });
 
     return c;
   });

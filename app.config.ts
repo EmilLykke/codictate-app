@@ -18,6 +18,9 @@ const config: ExpoConfig = {
   ios: {
     icon: "./assets/icon.iconset/icon_512x512@2x.png",
     bundleIdentifier: "app.codictate",
+    // Signs every target, extensions included. Prebuild recreates ios/ each run since
+    // SDK 57, so a team picked in Xcode does not survive the next prebuild.
+    appleTeamId: "L256GR2793",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription:
@@ -73,6 +76,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    "expo-asset",
     [
       "expo-build-properties",
       {
@@ -122,8 +126,10 @@ const config: ExpoConfig = {
 // FRAMEWORK_SEARCH_PATHS wholesale on every prebuild; withCrispASR appends the
 // crispasr entries to whatever it leaves behind. withParakeetCpp and
 // withOnnxRuntime (ekko and ekko-pnc) sit inside it for the same reason.
-export default withFluidAudio(
-  withKeyboardExtension(
+// withFluidAudio sits inside withKeyboardExtension too, so it runs after the
+// keyboard extension target exists and can link FluidAudio to it.
+export default withKeyboardExtension(
+  withFluidAudio(
     withCrispASR(withLlama(withParakeetCpp(withOnnxRuntime(config)))),
   ),
 );

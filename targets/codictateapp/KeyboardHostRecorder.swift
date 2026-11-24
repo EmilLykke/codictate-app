@@ -893,7 +893,7 @@ final class KeyboardHostRecorder: NSObject {
 
     // MARK: - Public entry points
 
-    /// Called from `AppDelegate.application(_:open:options:)` when the keyboard opens
+    /// Called from `AppDelegate.handleHostDeepLink(_:)` when the keyboard opens
     /// `codictateapp://keyboard-record`. Reads pending phase=start written by the keyboard.
     func handleDeepLink() {
         DispatchQueue.main.async { [weak self] in

@@ -4,18 +4,22 @@ Expo + React Native iOS app. On-device speech-to-text with four ASR engines: Par
 
 ## Building
 
-Never run prebuild just to edit Swift files; build directly in Xcode or `expo run:ios`. Prebuild is only needed when `app.json`, config plugins, or native module setup changes. `--clean` nukes the whole `ios/` folder; only use it when things are truly broken.
+Never run prebuild just to edit Swift files; build directly in Xcode or `expo run:ios`. Prebuild is only needed when `app.config.ts`, config plugins, or native module setup changes. Since SDK 57 `expo prebuild` deletes and recreates `ios/` every run (`--no-clean` keeps it), so the plugins must produce a working project from an empty `ios/` in one pass.
 
 **Never edit files inside `ios/` directly.** Prebuild regenerates the entire `ios/` folder, wiping any direct edits. Always edit the source of truth:
 - Swift source files → `targets/codictateapp/` (copied into `ios/` by `withKeyboardExtension` plugin)
-- AppDelegate modifications → `plugins/withKeyboardExtension.ts` (injected via string replacement during prebuild)
+- AppDelegate and SceneDelegate modifications → `plugins/withKeyboardExtension.ts` (string patches on Expo's SDK 58 template; prebuild fails loudly when an anchor is missing)
 - Widget files → `targets/widgets/`
 - Expo module native code → `modules/codictate-dictation/ios/`
 
 ```bash
-bun run prebuild:ios   # regenerate ios/ from app.config.ts (no clean)
+bun run prebuild:ios   # recreate ios/ from app.config.ts (clean)
 bun run ios            # expo run:ios
 ```
+
+**Launch (scene life cycle, SDK 58):** `AppDelegate.didFinishLaunching` runs `KeyboardHostRecorder.bootstrap()` on every launch and only creates the React Native factory. `SceneDelegate` starts React Native when its scene first enters the foreground, never on a background launch (Action Button intent, background download relaunch). Host deep links (`keyboard-record`, `keyboard-session`, `dictation`) go to `AppDelegate.handleHostDeepLink` and never reach JS; `SceneDelegate` filters them out of warm links.
+
+Plugin order matters: Expo runs mods in reverse registration order, so inner wrappers in `app.config.ts` run later. `withKeyboardExtension` registers the keyboard target last so it exists before its other mods, and `withFluidAudio` sits inside it to link FluidAudio to that target.
 
 ## Architecture
 
