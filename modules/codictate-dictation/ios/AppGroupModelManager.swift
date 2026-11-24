@@ -171,18 +171,35 @@ final class AppGroupModelManager {
 
     private static let parakeetReadyKey = "parakeetModelReady"
 
-    /// Where FluidAudio keeps Parakeet TDT v3: its `AsrModels.defaultCacheDirectory(for: .v3)`.
-    /// Mirror of `ParakeetModelManager.modelDirectory` in the main app target, which asks
-    /// FluidAudio for it; a literal here because this module cannot import FluidAudio.
+    private static let parakeetRelativePath = "FluidAudio/Models/parakeet-tdt-0.6b-v3"
+
+    /// Where Parakeet TDT v3 lives: FluidAudio's own relative layout, rooted in the App Group
+    /// so the keyboard extension loads the same files. Mirror of
+    /// `ParakeetModelManager.modelDirectory` in the main app target, which derives the leaf
+    /// from FluidAudio; a literal here because this module cannot import FluidAudio.
     /// Keep the two the same.
     var parakeetModelDirectory: URL? {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        return appSupport?.appendingPathComponent("FluidAudio/Models/parakeet-tdt-0.6b-v3", isDirectory: true)
+        containerURL?.appendingPathComponent(Self.parakeetRelativePath, isDirectory: true)
+    }
+
+    /// FluidAudio's default cache in Application Support, where builds before the App Group
+    /// move kept Parakeet. The Host migrates it at launch; delete removes it as well, in case
+    /// that migration could not run or left it behind.
+    private var legacyParakeetModelDirectory: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(Self.parakeetRelativePath, isDirectory: true)
+    }
+
+    /// Removes Parakeet from the App Group and from the legacy Application Support cache.
+    func deleteParakeetFiles() {
+        for dir in [parakeetModelDirectory, legacyParakeetModelDirectory].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(at: dir)
+        }
     }
 
     /// Checks the persistent flag set by ParakeetModelManager after a successful download.
-    /// FluidAudio manages its own CoreML cache, so we rely on this flag
-    /// rather than checking for specific files on disk.
+    /// The Host clears it at launch when the files are missing from `parakeetModelDirectory`,
+    /// so we rely on this flag rather than mirroring FluidAudio's list of required files.
     func parakeetModelIsReady() -> Bool {
         guard let suite = UserDefaults(suiteName: groupID) else { return false }
         return suite.bool(forKey: Self.parakeetReadyKey)

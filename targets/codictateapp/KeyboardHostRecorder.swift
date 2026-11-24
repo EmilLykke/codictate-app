@@ -33,6 +33,8 @@ enum KeyboardDictationBridge {
     /// Shown in keyboard strip during processing when first-time Parakeet load is pending.
     static let processingMessageKey = "kbdProcessingMessage"
     static let parakeetModelReadyKey = "parakeetModelReady"
+    /// The build Parakeet was last prepared for (see `prepareParakeetAfterUpdateIfNeeded`).
+    static let parakeetPreparedBuildKey = "parakeetPreparedBuild"
 
     static let phaseIdle = "idle"
     static let phaseStart = "start"
@@ -90,8 +92,6 @@ private final class TranscriptionRouter {
         }
     }
 
-    /// The App Group key for the build Parakeet was last prepared for.
-    private static let parakeetPreparedBuildKey = "parakeetPreparedBuild"
     /// Same rule as macOS Settings: a Preparation shorter than this is never shown.
     private static let preparingRevealDelay: TimeInterval = 1
     private var didCheckParakeetAfterUpdate = false
@@ -142,7 +142,7 @@ private final class TranscriptionRouter {
         didCheckParakeetAfterUpdate = true
         guard let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName) else { return }
         let build = Self.currentBuild
-        guard suite.string(forKey: Self.parakeetPreparedBuildKey) != build else { return }
+        guard suite.string(forKey: KeyboardDictationBridge.parakeetPreparedBuildKey) != build else { return }
         let preferred = suite.string(forKey: KeyboardDictationBridge.preferredVariantKey) ?? "base"
         let variant = ModelManager.Variant(rawValue: preferred) ?? .base
         guard variant.engine == .parakeet,
@@ -156,7 +156,7 @@ private final class TranscriptionRouter {
             let started = Date()
             do {
                 try await parakeet.warmUp()
-                suite.set(build, forKey: Self.parakeetPreparedBuildKey)
+                suite.set(build, forKey: KeyboardDictationBridge.parakeetPreparedBuildKey)
                 suite.synchronize()
                 NSLog("[KeyboardHost] Parakeet prepared in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
             } catch {
@@ -605,6 +605,9 @@ final class KeyboardHostRecorder: NSObject {
         NSLog("[KeyboardHost] bootstrap() - installing observers")
         ensureDefaultWarmDurationConfigured()
         installNotificationObservers()
+        // Before anything reads Parakeet readiness or loads it: moves models an older build
+        // left in Application Support into the App Group, where the keyboard can read them.
+        ParakeetModelManager.shared.migrateLegacyModelsIfNeeded()
         ParakeetModelManager.shared.installObserver()
         // Before the session is attached: a download that finished while the app was
         // away replays as soon as the session exists, and that replay must be observed.

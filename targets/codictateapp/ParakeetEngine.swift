@@ -16,9 +16,10 @@ enum ParakeetModelNotification {
 }
 
 /// Manages the Parakeet TDT v3 CoreML model lifecycle.
-/// Uses FluidAudio's `downloadAndLoad`, which downloads once and then loads from its
-/// cache. The cache lives in the app's Application Support directory (not the App
-/// Group), because only the main app process runs Parakeet inference.
+/// Uses FluidAudio's `downloadAndLoad(to: modelDirectory)`, which downloads once and then
+/// loads from that folder. The folder is in the App Group, not FluidAudio's default
+/// Application Support cache, because the keyboard extension loads the same files and
+/// cannot read the app's own container.
 final class ParakeetModelManager {
 
     static let shared = ParakeetModelManager()
@@ -31,21 +32,140 @@ final class ParakeetModelManager {
     private var downloadTask: Task<Void, Error>?
     private let downloadLock = NSLock()
 
-    /// Where `downloadAndLoad(version: .v3)` keeps the models:
-    /// `Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`. Mirrored as a literal by
-    /// `AppGroupModelManager.parakeetModelDirectory` in the Expo module, which cannot
-    /// import FluidAudio; keep the two the same.
-    var modelDirectory: URL {
+    private static let appGroupID = "group.app.codictate"
+    /// The leaf every other reader of the models hard-codes: the Expo module's
+    /// `AppGroupModelManager.parakeetModelDirectory` and the keyboard extension.
+    private static let expectedFolderName = "parakeet-tdt-0.6b-v3"
+
+    /// Where FluidAudio kept the models before they moved to the App Group:
+    /// `Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`. Read only by
+    /// `migrateLegacyModelsIfNeeded()`.
+    private static var legacyModelDirectory: URL {
         AsrModels.defaultCacheDirectory(for: .v3)
     }
 
+    /// `<App Group>/FluidAudio/Models/parakeet-tdt-0.6b-v3`: FluidAudio's own relative
+    /// layout, rooted in the App Group so the keyboard extension loads the same files.
+    /// The leaf must be FluidAudio's folder name, because `download(to:)` and `load(from:)`
+    /// write and read `directory.deletingLastPathComponent()/<folderName>`, whatever leaf
+    /// they are given. Mirrored as a literal by `AppGroupModelManager.parakeetModelDirectory`
+    /// in the Expo module, which cannot import FluidAudio, and by the keyboard extension;
+    /// keep them the same. Without an App Group container (a missing entitlement) it falls
+    /// back to FluidAudio's default, which only this process can read.
+    let modelDirectory: URL = {
+        let folderName = ParakeetModelManager.legacyModelDirectory.lastPathComponent
+        if folderName != ParakeetModelManager.expectedFolderName {
+            NSLog("[ParakeetModelManager] FluidAudio's v3 folder is \(folderName), not \(ParakeetModelManager.expectedFolderName); the Expo module and keyboard look in the wrong place")
+            assertionFailure("FluidAudio renamed the Parakeet v3 folder")
+        }
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ParakeetModelManager.appGroupID
+        ) else {
+            NSLog("[ParakeetModelManager] No App Group container; using FluidAudio's default cache")
+            return ParakeetModelManager.legacyModelDirectory
+        }
+        return container
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent(folderName, isDirectory: true)
+    }()
+
+    private var modelsExistOnDisk: Bool {
+        AsrModels.modelsExist(at: modelDirectory, version: .v3)
+    }
+
     /// Persistent readiness flag: true after first successful download+load.
-    /// FluidAudio caches the CoreML models across launches, so the flag
-    /// indicates that `downloadAndLoad` will resolve from cache on next call.
+    /// The models stay in `modelDirectory` across launches, so the flag
+    /// indicates that `downloadAndLoad` will resolve from disk on next call.
+    /// `migrateLegacyModelsIfNeeded()` clears it when the files are not there.
     var isReady: Bool {
         if loadedModels != nil { return true }
-        let suite = UserDefaults(suiteName: "group.app.codictate")
+        let suite = UserDefaults(suiteName: Self.appGroupID)
         return suite?.bool(forKey: Self.readyKey) == true
+    }
+
+    /// Moves models FluidAudio downloaded into Application Support before this build into
+    /// `modelDirectory`, so an update neither re-downloads ~500 MB nor leaves it behind.
+    /// Both folders are on the same APFS volume, so the move is a rename and the copy
+    /// fallback a clone. An incomplete legacy folder moves too, since FluidAudio downloads
+    /// only the files missing from it. The legacy folder is deleted only once
+    /// `modelDirectory` holds the models.
+    /// Then reconciles `parakeetModelReady` with the disk, so the flag never claims models
+    /// that are not at `modelDirectory`; the next load downloads them there.
+    /// Synchronous: call from `KeyboardHostRecorder.bootstrap()` before anything reads
+    /// readiness or loads Parakeet.
+    func migrateLegacyModelsIfNeeded() {
+        let suite = UserDefaults(suiteName: Self.appGroupID)
+        let legacy = Self.legacyModelDirectory
+        let destination = modelDirectory
+        let fileManager = FileManager.default
+
+        if legacy.standardizedFileURL != destination.standardizedFileURL,
+           fileManager.fileExists(atPath: legacy.path) {
+            if modelsExistOnDisk {
+                Self.removeLegacy(legacy, reason: "App Group already has the models")
+            } else if Self.moveLegacy(legacy, to: destination) {
+                // The Neural Engine copy is cached per model path, so the first load
+                // from the new path recompiles; let the after-update Preparation run it.
+                suite?.removeObject(forKey: KeyboardDictationBridge.parakeetPreparedBuildKey)
+            }
+        }
+
+        if suite?.bool(forKey: Self.readyKey) == true, !modelsExistOnDisk {
+            NSLog("[ParakeetModelManager] parakeetModelReady was set but no models are at \(destination.path); clearing it")
+            suite?.removeObject(forKey: Self.readyKey)
+        }
+        suite?.synchronize()
+    }
+
+    /// Moves, else copies then deletes the source. A partial copy is removed, so the
+    /// legacy folder stays the only copy. True once `destination` holds everything
+    /// `legacy` held.
+    private static func moveLegacy(_ legacy: URL, to destination: URL) -> Bool {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            // Only an incomplete folder (an interrupted download) gets here, and it would
+            // make the move fail.
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+        } catch {
+            NSLog("[ParakeetModelManager] Migration could not prepare \(destination.path): \(error.localizedDescription); keeping \(legacy.path)")
+            return false
+        }
+
+        do {
+            try fileManager.moveItem(at: legacy, to: destination)
+            NSLog("[ParakeetModelManager] Moved Parakeet models to \(destination.path)")
+            return true
+        } catch {
+            NSLog("[ParakeetModelManager] Move failed: \(error.localizedDescription); copying instead")
+        }
+
+        do {
+            try fileManager.copyItem(at: legacy, to: destination)
+        } catch {
+            NSLog("[ParakeetModelManager] Copy failed: \(error.localizedDescription); keeping \(legacy.path)")
+            try? fileManager.removeItem(at: destination)
+            return false
+        }
+        NSLog("[ParakeetModelManager] Copied Parakeet models to \(destination.path)")
+        // A failed delete is retried on the next launch, which finds both folders.
+        removeLegacy(legacy, reason: "copied to the App Group")
+        return true
+    }
+
+    private static func removeLegacy(_ legacy: URL, reason: String) {
+        do {
+            try FileManager.default.removeItem(at: legacy)
+            NSLog("[ParakeetModelManager] Deleted \(legacy.path) (\(reason))")
+        } catch {
+            NSLog("[ParakeetModelManager] Could not delete \(legacy.path) (\(reason)): \(error.localizedDescription)")
+        }
     }
 
     /// Clears in-memory cache after Settings delete so re-download runs fully, and lets go
@@ -80,7 +200,7 @@ final class ParakeetModelManager {
         guard !preparing || !isPreparing else { return }
         isPreparing = preparing
         NSLog("[ParakeetModelManager] preparing=\(preparing)")
-        let suite = UserDefaults(suiteName: "group.app.codictate")
+        let suite = UserDefaults(suiteName: Self.appGroupID)
         suite?.set(preparing, forKey: Self.preparingKey)
         suite?.synchronize()
         NotificationCenter.default.post(
@@ -91,8 +211,8 @@ final class ParakeetModelManager {
     }
 
     /// Downloads (if needed) and loads the Parakeet TDT v3 CoreML models.
-    /// FluidAudio manages the on-disk cache internally; `downloadAndLoad`
-    /// is a no-op when the cache is warm.
+    /// `downloadAndLoad(to: modelDirectory)` skips the download when the files are
+    /// already there.
     func downloadAndPrepare() async throws {
         if loadedModels != nil {
             syncReadyFlag()
@@ -126,10 +246,12 @@ final class ParakeetModelManager {
             userInfo: ["progress": 0.0]
         )
 
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        // No configuration: FluidAudio's default keeps every part on the CPU and Neural
+        // Engine, never the GPU, which iOS forbids in the background.
+        let models = try await AsrModels.downloadAndLoad(to: modelDirectory, version: .v3)
         loadedModels = models
 
-        let suite = UserDefaults(suiteName: "group.app.codictate")
+        let suite = UserDefaults(suiteName: Self.appGroupID)
         suite?.set(true, forKey: Self.readyKey)
         suite?.synchronize()
 
@@ -141,7 +263,7 @@ final class ParakeetModelManager {
     }
 
     private func syncReadyFlag() {
-        let suite = UserDefaults(suiteName: "group.app.codictate")
+        let suite = UserDefaults(suiteName: Self.appGroupID)
         suite?.set(true, forKey: Self.readyKey)
         suite?.synchronize()
     }
@@ -150,7 +272,7 @@ final class ParakeetModelManager {
     /// Called once from `KeyboardHostRecorder.bootstrap()`.
     func installObserver() {
         // A Preparation cut short by the process ending must not leave the app showing it.
-        let suite = UserDefaults(suiteName: "group.app.codictate")
+        let suite = UserDefaults(suiteName: Self.appGroupID)
         suite?.removeObject(forKey: Self.preparingKey)
 
         NotificationCenter.default.addObserver(

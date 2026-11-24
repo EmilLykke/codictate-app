@@ -365,9 +365,7 @@ public final class CodictateDictationModule: Module {
                     name: Notification.Name("codictate.parakeet.reset"),
                     object: nil
                 )
-                if let dir = AppGroupModelManager.shared.parakeetModelDirectory {
-                    try? FileManager.default.removeItem(at: dir)
-                }
+                AppGroupModelManager.shared.deleteParakeetFiles()
                 let suite = UserDefaults(suiteName: Self.appGroupID)
                 suite?.removeObject(forKey: "parakeetModelReady")
                 // A re-download gets the after-update Parakeet Preparation again.
