@@ -19,17 +19,17 @@ bun run ios            # expo run:ios
 
 ## Architecture
 
-**App Group**: `group.app.codictate` -- shared container for UserDefaults state and whisper model files.
+**App Group**: `group.app.codictate` -- shared container for UserDefaults state and every Speech Model's files, Parakeet's included.
 
 **Entry points:**
 - Main app (JS + `KeyboardHostRecorder.swift`) -- in-app dictation
-- `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button (trigger-only, does not run ASR models)
+- `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button. With Parakeet as the Speech Model it dictates by itself on the In-keyboard path (`InKeyboardDictation.swift`: `getUserMedia` in a hidden `WKWebView`, Parakeet through FluidAudio on the Neural Engine, models read from the App Group); otherwise it only triggers the Host (Warm or Cold path)
 - `AudioRecordingIntent` -- Action Button / Shortcuts
 
-**Recording flow:** keyboard/intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to `ParakeetEngine`, `WhisperEngine`, `CohereEngine` or `EkkoEngine` (ekko's text then goes through `PunctuationRestorer`), runs S1-mini formatting when eligible, writes transcript back to App Group.
+**Recording flow:** keyboard (Warm or Cold path; the In-keyboard path writes no phase and never involves the Host) or intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to `ParakeetEngine`, `WhisperEngine`, `CohereEngine` or `EkkoEngine` (ekko's text then goes through `PunctuationRestorer`), runs S1-mini formatting when eligible, writes transcript back to App Group.
 
 **ASR engines (TranscriptionEngine protocol):**
-- `ParakeetEngine` -- wraps FluidAudio's `AsrManager`. Uses `AsrModels.downloadAndLoad(version: .v3)` for model management. Runs on Neural Engine via CoreML.
+- `ParakeetEngine` -- wraps FluidAudio's `AsrManager`. Uses `AsrModels.downloadAndLoad(to: modelDirectory, version: .v3)` for model management, with the models in the App Group. Runs on Neural Engine via CoreML.
 - `WhisperEngine` -- wraps the existing `WhisperBridge` (ObjC++). Loads `ggml-base-q5_1.bin` from the App Group container. CPU-only.
 - `CohereEngine` -- wraps `CohereBridge` (ObjC++) on crispasr's cohere backend. Runs the Danish hviske GGUF.
 - `EkkoEngine` -- wraps `EkkoBridge` (ObjC++) on parakeet.cpp's C API. Runs the Danish ekko GGUF slice by slice (`AudioSlicer`), Metal on device, CPU on the simulator. Its Raw Transcript is lowercase and unpunctuated, so the router always passes it through `PunctuationRestorer` (ekko-pnc on ONNX Runtime via `EkkoPncBridge`), which never fails a Dictation. Loaded while the user speaks, like Parakeet.
@@ -40,13 +40,13 @@ Engine selection is stored in UserDefaults under `preferredModelVariant` (App Gr
 
 | Variant | Engine | Storage | Size | Hardware |
 |---|---|---|---|---|
-| `parakeet` | Parakeet TDT v3 (FluidAudio) | FluidAudio's internal CoreML cache | ~500 MB | Neural Engine |
+| `parakeet` | Parakeet TDT v3 (FluidAudio) | `FluidAudio/Models/parakeet-tdt-0.6b-v3/` (App Group) | ~500 MB | Neural Engine |
 | `base` | Whisper base-q5_1 | `ggml-base-q5_1.bin` (App Group) | ~57 MB | CPU |
 | `base_en` | Whisper base.en-q5_1 | `ggml-base.en-q5_1.bin` (App Group) | ~57 MB | CPU |
 | `hviske` | hviske-v5-tiny q5_0 (crispasr) | `hviske-v5-tiny-q5_0.gguf` (App Group) | ~181 MB | GPU (Metal) |
 | `ekko` | ekko-v1-tiny q5_0 (parakeet.cpp) + ekko-pnc (ONNX Runtime) | `ekko-v1-tiny-q5_0.gguf` + `ekko-pnc/` (App Group) | ~152 MB | GPU (Metal) + CPU |
 
-Parakeet models are downloaded by `ParakeetModelManager` via FluidAudio's `AsrModels.downloadAndLoad(version: .v3)`. A `parakeetModelReady` flag in UserDefaults (App Group) persists across launches. Whisper models are downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container. ekko downloads its GGUF and ekko-pnc's three runtime files from their Mirrors at pinned commits, all at once with one progress value, and installs a file only if its size and sha256 match the pin. It is ready only with all four on disk, and deleting it deletes both parts.
+Parakeet models are downloaded by `ParakeetModelManager` via FluidAudio's `AsrModels.downloadAndLoad(to: modelDirectory, version: .v3)` into `<App Group>/FluidAudio/Models/parakeet-tdt-0.6b-v3/`: FluidAudio's own layout, rooted in the App Group instead of its default Application Support cache, so the keyboard extension can load the same files. The leaf must stay FluidAudio's folder name (`download(to:)` and `load(from:)` use `directory.deletingLastPathComponent()/<folderName>`); `ParakeetModelManager.modelDirectory` derives it, and `AppGroupModelManager.parakeetModelDirectory` and the keyboard extension hard-code it. At launch `ParakeetModelManager.migrateLegacyModelsIfNeeded()` (from `KeyboardHostRecorder.bootstrap()`) moves models an older build left in `Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3` into the App Group, and deleting Parakeet removes both folders. A `parakeetModelReady` flag in UserDefaults (App Group) persists across launches; the same launch step clears it when the models are not in the App Group folder. Whisper models are downloaded from `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` into the App Group container. ekko downloads its GGUF and ekko-pnc's three runtime files from their Mirrors at pinned commits, all at once with one progress value, and installs a file only if its size and sha256 match the pin. It is ready only with all four on disk, and deleting it deletes both parts.
 
 ## FluidAudio SPM dependency
 

@@ -35,3 +35,33 @@ Punctuation Restoration runs on ONNX Runtime 1.30.0, Copyright (c) Microsoft
 Corporation, under the MIT License. Its LICENSE and ThirdPartyNotices.txt, from
 tag v1.30.0 of https://github.com/microsoft/onnxruntime, are distributed in
 third-party/onnxruntime.
+
+The keyboard's In-keyboard dictation (targets/CodictateDictationKeyboard:
+KeyboardWebCapture.swift, KeyboardParakeet.swift, InKeyboardDictation.swift)
+adapts code from two projects under the MIT License:
+
+- Hex (https://github.com/anomalyco/hex), Copyright (c) 2026 Christopher
+  Langton: the WebKit microphone capture page and WAV writer, Parakeet loading
+  in the keyboard with its Neural Engine check and memory budget, and the
+  resume request for audio the capture interrupted.
+- ios-keyboard-dictation (https://github.com/stephancill/ios-keyboard-dictation),
+  Copyright (c) 2026 Stephan Cilliers: the native heartbeat and page watchdog
+  that stop the microphone when the keyboard stops pinging.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

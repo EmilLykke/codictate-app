@@ -6,11 +6,16 @@ One speak-to-text cycle: start recording, stop, transcribe, deliver the transcri
 
 ## Cold path
 
-Keyboard signals the host by opening `codictateapp://keyboard-record`. Used when no valid keyboard warm session exists.
+Keyboard signals the host by opening `codictateapp://keyboard-record`. Used when no valid keyboard warm session exists and the In-keyboard path is not eligible, or when an In-keyboard capture fails to start.
 
 ## Warm path
 
-Keyboard writes `phase=start` to the App Group and posts a Darwin notification. The host must already be running a **listen session** (continuous `AVAudioEngine` + `UIBackgroundModes: audio`). A background `DispatchSourceTimer` polls App Group phase every ~250ms (Darwin alone is unreliable while backgrounded). The keyboard must **not** call `extensionContext.open` on the warm path.
+Keyboard writes `phase=start` to the App Group and posts a Darwin notification. The host must already be running a **listen session** (continuous `AVAudioEngine` + `UIBackgroundModes: audio`). A background `DispatchSourceTimer` polls App Group phase every ~250ms (Darwin alone is unreliable while backgrounded). The keyboard must **not** call `extensionContext.open` on the warm path. A valid warm session takes precedence over the In-keyboard path, so the keyboard and the Host never both own the microphone.
+
+## In-keyboard path
+
+The keyboard records and transcribes a Dictation turn itself, without opening the Host, even when the app is closed. It captures with `getUserMedia` in a hidden `WKWebView` (WebKit records in its own process, so the keyboard's microphone restriction does not apply) and transcribes with Parakeet on the Neural Engine through FluidAudio, loading the Host's models from the App Group. It writes no phase to the App Group. Eligible only with Full Access, Parakeet as the Speech Model and ready, automatic Transcription Language, microphone granted, a Neural Engine and 5 GiB of memory, room in the keyboard's memory limit, S1-mini formatting off, no Host warm session, and an idle shared phase; otherwise the keyboard uses the Warm or Cold path. A capture that fails to start hands that tap to the Cold path; a failed load or transcription sets the path aside for the keyboard process.
+_Avoid_: local dictation, keyboard ASR.
 
 ## Keyboard warm session / listen session
 
@@ -28,7 +33,7 @@ On the Codictate keyboard extension, the Dictate key uses color to show phase: *
 
 ## First-time Parakeet processing
 
-Parakeet models load lazily via FluidAudio `AsrModels.downloadAndLoad` on the first transcribe of a install. While `parakeetModelReady` is false, keyboard strip and Live Activity show extended copy ("first use may take a minute"). After the first successful transcribe, processing UI returns to generic "Transcribing...".
+Parakeet models load lazily via FluidAudio `AsrModels.downloadAndLoad` on the first transcribe of a install. While `parakeetModelReady` is false, keyboard strip and Live Activity show extended copy ("first use may take a minute"). After the first successful transcribe, processing UI returns to generic "Transcribing...". On the In-keyboard path the keyboard compiles its own copy for the Neural Engine once per build (about 15 s), and shows the same keyboard copy when that load is still running at the stop.
 
 ## Host
 

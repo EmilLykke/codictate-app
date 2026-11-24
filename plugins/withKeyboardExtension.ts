@@ -12,7 +12,7 @@
  *  4. Injects targets/codictateapp/KeyboardHostRecorder.swift into AppDelegate.swift (app target).
  *  5. Patches AppDelegate for codictateapp://keyboard-record and for background
  *     URLSession events (Speech Model downloads that finish while the app is away).
- *  6. Adds App Group entitlement, keyboard extension (UIKit-only), links the ASR bridges + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
+ *  6. Adds App Group entitlement, keyboard extension (Swift-only; FluidAudio via withFluidAudio), links the ASR bridges + ModelManager into the app target via node-xcode (never hand-edit project.pbxproj).
  *
  * All Xcode edits live in this plugin only. Do not hand-edit ios/*.xcodeproj; prebuild regenerates ios/.
  */
@@ -35,10 +35,17 @@ const EXT_BUNDLE_ID = "app.codictate.keyboard";
 const APP_GROUP_ID = "group.app.codictate";
 const DEPLOYMENT_TARGET = "17.0";
 
-/** Keyboard extension: UI + App Group bridge only (no mic / no Whisper). */
+/**
+ * Keyboard extension: UI, the App Group bridge, and the In-keyboard path (WebKit capture +
+ * Parakeet through FluidAudio, which withFluidAudio links to this target). Every file here
+ * must also be in targets/CodictateDictationKeyboard/, which Step 1 copies wholesale.
+ */
 const EXTENSION_SOURCES = [
   "KeyboardViewController.swift",
   "DictationKeyboardView.swift",
+  "InKeyboardDictation.swift",
+  "KeyboardWebCapture.swift",
+  "KeyboardParakeet.swift",
 ];
 
 /** Removed from the extension target on each prebuild sync (legacy layout). */
@@ -786,7 +793,7 @@ function syncKeyboardExtensionAndWireHostTranscription(
   );
 }
 
-/** Reset extension target to a thin UIKit-only keyboard (no Obj-C++ / no ASR). */
+/** Reset extension target to a Swift-only keyboard (no Obj-C++ bridges; Parakeet comes from the FluidAudio package). */
 function patchKeyboardExtensionBuildSettings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   project: any,
@@ -1349,7 +1356,7 @@ const withKeyboardExtension: ConfigPlugin = (config) => {
     }
 
     // ------------------------------------------------------------------
-    // 3c. Extension sources: UI + bridge only (Whisper runs in the main app).
+    // 3c. Extension sources: UI, bridge and the In-keyboard path (Whisper runs in the main app).
     // ------------------------------------------------------------------
     EXTENSION_SOURCES.forEach((filename) => {
       project.addSourceFile(filename, { target: extUuid }, groupKey);

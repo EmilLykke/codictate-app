@@ -1,7 +1,7 @@
 import UIKit
 import Foundation
 
-private enum KbdSuite {
+enum KbdSuite {
     static let suiteName        = "group.app.codictate"
     static let phaseKey         = "kbdDictationPhase"
     static let wavFileKey       = "kbdDictationWavFile"
@@ -13,6 +13,12 @@ private enum KbdSuite {
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
     static let warmSessionActiveKey = "kbdWarmSessionActive"
     static let processingMessageKey = "kbdProcessingMessage"
+    /// Read for the In-keyboard path's eligibility; the Host and JS write them.
+    static let preferredVariantKey = "preferredModelVariant"
+    static let transcriptionLanguageKey = "transcriptionLanguageId"
+    static let parakeetModelReadyKey = "parakeetModelReady"
+    static let formattingModelKey = "formattingModel"
+    static let s1MiniVerifiedKey = "s1MiniModelVerified"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -31,6 +37,11 @@ private let intentDarwinStopName = "app.codictate.dictation.intent.stop"
 final class KeyboardViewController: UIInputViewController, DictationKeyboardViewDelegate {
 
     private lazy var keyboardView = DictationKeyboardView()
+    /// The In-keyboard path. Its turns write nothing to the App Group.
+    private let inKeyboard = InKeyboardDictation()
+    /// An In-keyboard result or error is on screen: clearing it must not reset the shared
+    /// phase, which may meanwhile belong to a Host recording (Action Button).
+    private var localOutcomeOnScreen = false
 
     private var suite: UserDefaults? { UserDefaults(suiteName: KbdSuite.suiteName) }
     private var phasePollTimer: Timer?
@@ -46,7 +57,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                     guard let self else { return }
                     switch self.viewState {
                     case .result:
-                        self.resetSuiteToIdle()
+                        if !self.localOutcomeOnScreen { self.resetSuiteToIdle() }
+                        self.localOutcomeOnScreen = false
                         self.viewState = .idle
                     default: break
                     }
@@ -56,7 +68,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                     guard let self else { return }
                     switch self.viewState {
                     case .error:
-                        self.resetSuiteToIdle()
+                        if !self.localOutcomeOnScreen { self.resetSuiteToIdle() }
+                        self.localOutcomeOnScreen = false
                         self.viewState = .idle
                     default: break
                     }
@@ -82,12 +95,19 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             keyboardView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         if let inputView { inputView.allowsSelfSizing = true }
+        inKeyboard.onProcessing = { [weak self] message in
+            self?.viewState = .processing(message: message)
+        }
+        inKeyboard.onFinish = { [weak self] outcome in
+            self?.finishInKeyboardTurn(outcome)
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         if case .result = viewState { viewState = .idle }
         if case .error  = viewState { viewState = .idle }
+        localOutcomeOnScreen = false
         suite?.set(true, forKey: KbdSuite.keyboardVisibleKey)
         suite?.synchronize()
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
@@ -120,6 +140,16 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         startPhasePolling()
     }
 
+    /// After the first frame: preloads the In-keyboard path's capture page and Parakeet, so a
+    /// tap finds them ready.
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false)
+        NSLog("[Keyboard] In-keyboard path at appear: \(verdict.reason)")
+        guard verdict.eligible else { return }
+        inKeyboard.prepare(in: view)
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         suite?.set(false, forKey: KbdSuite.keyboardVisibleKey)
@@ -127,11 +157,25 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         stopStartFallback()
         stopPhasePolling()
         stopResultPolling()
+        // The microphone must never outlive the keyboard; a turn cut short is discarded.
+        if inKeyboard.isActive {
+            inKeyboard.cancel()
+            viewState = .idle
+        }
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        KeyboardParakeet.shared.handleMemoryWarning()
     }
 
     // MARK: DictationKeyboardViewDelegate
 
     func didTapDictate() {
+        if inKeyboard.isActive {
+            inKeyboard.stop()
+            return
+        }
         suite?.synchronize()
         let activePhase = suite?.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle
         switch activePhase {
@@ -142,6 +186,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             viewState = processingViewState(from: suite)
             startResultPolling()
         default:
+            if startInKeyboardTurnIfEligible() { return }
             startHandoff()
         }
     }
@@ -162,9 +207,43 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         advanceToNextInputMode()
     }
 
+    // MARK: In-keyboard path
+
+    private func startInKeyboardTurnIfEligible() -> Bool {
+        let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: true)
+        NSLog("[Keyboard] In-keyboard path at tap: \(verdict.reason)")
+        guard verdict.eligible, inKeyboard.start(in: view) else { return false }
+        stopStartFallback()
+        stopResultPolling()
+        localOutcomeOnScreen = false
+        viewState = .recording
+        return true
+    }
+
+    /// Delivers an In-keyboard turn exactly as the `.ready` handling in `checkPhase` delivers
+    /// a Host transcript.
+    private func finishInKeyboardTurn(_ outcome: InKeyboardDictation.Outcome) {
+        switch outcome {
+        case .text(let text):
+            textDocumentProxy.insertText(text)
+            localOutcomeOnScreen = true
+            viewState = .result(text)
+        case .noSpeech:
+            viewState = .idle
+        case .fallBack(let reason):
+            NSLog("[Keyboard] In-keyboard path fell back for this tap: \(reason)")
+            viewState = .idle
+            startHandoff()
+        case .failed(let message):
+            localOutcomeOnScreen = true
+            viewState = .error(message)
+        }
+    }
+
     // MARK: Handoff
 
     private func startHandoff() {
+        localOutcomeOnScreen = false
         guard hasFullAccess else {
             viewState = .error("Enable \"Allow Full Access\" in Settings > General > Keyboard.")
             return
@@ -342,6 +421,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     }
 
     private func checkPhase() {
+        // An In-keyboard turn owns the view state; the shared phase says nothing about it.
+        guard !inKeyboard.isActive else { return }
         guard let suite else { return }
         suite.synchronize()
         let phase = suite.string(forKey: KbdSuite.phaseKey) ?? KbdSuite.phaseIdle

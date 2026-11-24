@@ -199,6 +199,25 @@ const licenses: LicenseEntry[] = [
     projectUrl: 'https://github.com/ggml-org/llama.cpp',
     note: 'On-device inference runtime used to run S1-mini.',
   },
+  {
+    name: 'Hex',
+    copyright: 'Copyright (c) 2026 Christopher Langton',
+    licenseType: 'MIT License',
+    licenseUrl: 'https://github.com/anomalyco/hex/blob/dev/LICENSE',
+    projectUrl: 'https://github.com/anomalyco/hex',
+    note:
+      "The keyboard's dictation without opening the app adapts Hex's " +
+      'microphone capture and its Parakeet loading in the keyboard.',
+  },
+  {
+    name: 'ios-keyboard-dictation',
+    copyright: 'Copyright (c) 2026 Stephan Cilliers',
+    licenseType: 'MIT License',
+    licenseUrl:
+      'https://github.com/stephancill/ios-keyboard-dictation/blob/main/LICENSE',
+    projectUrl: 'https://github.com/stephancill/ios-keyboard-dictation',
+    note: 'The keyboard adapts its check that stops the microphone when the keyboard goes away.',
+  },
 ]
 
 const mitLicenseBody = `Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
