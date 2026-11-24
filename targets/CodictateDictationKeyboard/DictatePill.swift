@@ -210,8 +210,8 @@ final class DictatePill: UIControl {
     }
 
     /// Linear RMS of the latest buffer, 0...1. Only drawn on the In-keyboard path.
-    func setInputLevel(_ rms: Float) {
-        meter.push(rms: rms)
+    func setInputLevels(_ levels: [Float]) {
+        meter.push(levels: levels)
     }
 
     private var currentContent: UIView {
@@ -384,19 +384,20 @@ final class LevelMeterView: UIView {
     private static let barHeight: CGFloat = 18
     private static let barSpacing: CGFloat = 2.5
     private static let restScale: CGFloat = 0.2
-    /// Center bar tallest, so the meter reads as one shape.
-    private static let weights: [CGFloat] = [0.55, 0.8, 1, 0.8, 0.55]
-    /// Outer bars show the level a few frames later than the center: a ripple of real data.
-    private static let delayFrames = [6, 3, 0, 3, 6]
+    /// A slight center bias, so the meter still reads as one shape.
+    private static let weights: [CGFloat] = [0.8, 0.92, 1, 0.92, 0.8]
+    /// Speech without auto gain sits around -35 to -25 dBFS at arm's length; this range
+    /// puts it in the upper half of the meter, and room noise near the floor.
+    private static let floorDB: Double = -55
+    private static let ceilingDB: Double = -20
 
     private var bars: [UIView] = []
     private var link: CADisplayLink?
     private var live = false
     private var isRunning = false
-    private var target: CGFloat = 0
-    private var smoothed: CGFloat = 0
-    private var history = [CGFloat](repeating: 0, count: 8)
-    private var historyIndex = 0
+    /// Per bar: the latest slice level, mapped to 0...1, and its smoothed value on screen.
+    private var targets = [CGFloat](repeating: 0, count: barCount)
+    private var smoothed = [CGFloat](repeating: 0, count: barCount)
     private var startTime: CFTimeInterval = 0
     private var lastTimestamp: CFTimeInterval = 0
 
@@ -460,17 +461,22 @@ final class LevelMeterView: UIView {
     func stop() {
         isRunning = false
         stopLink()
-        target = 0
-        smoothed = 0
-        history = history.map { _ in 0 }
+        targets = targets.map { _ in 0 }
+        smoothed = smoothed.map { _ in 0 }
         setScales(Array(repeating: Self.restScale, count: Self.barCount))
     }
 
-    func push(rms: Float) {
-        guard live else { return }
-        // -50 dBFS (room) to -10 dBFS (close, loud speech) fills the meter.
-        let db = 20 * log10(max(Double(rms), 0.000_01))
-        target = CGFloat(min(1, max(0, (db + 50) / 40)))
+    /// One level per bar, in time order across the last buffer. A shorter array (an older
+    /// page) spreads its values across the bars.
+    func push(levels: [Float]) {
+        guard live, !levels.isEmpty else { return }
+        for index in 0..<Self.barCount {
+            let rms = levels[index * levels.count / Self.barCount]
+            let db = 20 * log10(max(Double(rms), 0.000_01))
+            let linear = min(1, max(0, (db - Self.floorDB) / (Self.ceilingDB - Self.floorDB)))
+            // A gentle curve lifts quiet speech so the bars move with normal talking.
+            targets[index] = CGFloat(pow(linear, 0.75))
+        }
     }
 
     private func stopLink() {
@@ -483,16 +489,15 @@ final class LevelMeterView: UIView {
         let dt = lastTimestamp == 0 ? 1.0 / 60 : min(0.1, now - lastTimestamp)
         lastTimestamp = now
         if live {
-            // Fast attack, slower release, frame-rate independent.
-            let perFrame: CGFloat = target > smoothed ? 0.45 : 0.12
-            let k = 1 - pow(1 - perFrame, CGFloat(dt * 60))
-            smoothed += (target - smoothed) * k
-            history[historyIndex] = smoothed
-            let current = historyIndex
-            historyIndex = (historyIndex + 1) % history.count
+            // Fast attack, quick release (so syllables read as separate beats),
+            // frame-rate independent.
+            for index in 0..<Self.barCount {
+                let perFrame: CGFloat = targets[index] > smoothed[index] ? 0.5 : 0.22
+                let k = 1 - pow(1 - perFrame, CGFloat(dt * 60))
+                smoothed[index] += (targets[index] - smoothed[index]) * k
+            }
             setScales((0..<Self.barCount).map { index in
-                let delayed = history[(current - Self.delayFrames[index] + history.count) % history.count]
-                return Self.restScale + (1 - Self.restScale) * Self.weights[index] * delayed
+                Self.restScale + (1 - Self.restScale) * Self.weights[index] * smoothed[index]
             })
         } else {
             let t = now - startTime

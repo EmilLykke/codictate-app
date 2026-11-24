@@ -61,8 +61,9 @@ final class KeyboardPCMFile {
 final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     enum Event {
         case started(sampleRate: Double)
-        /// One processor buffer (4,096 samples) and its RMS level, 0...1.
-        case samples(Data, rms: Float)
+        /// One processor buffer (4,096 samples) and the RMS level (0...1) of each fifth of it,
+        /// in time order.
+        case samples(Data, levels: [Float])
         /// The capture ended, with the audio the processor still held delivered first.
         /// `reason` is nil for a `stop()`, else why the page ended it by itself (its track
         /// ended, its context closed, or native's heartbeat stopped).
@@ -180,7 +181,8 @@ final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WK
             onEvent?(.started(sampleRate: (body["rate"] as? Double) ?? 48_000))
         case "pcm":
             guard let encoded = body["data"] as? String, let data = Data(base64Encoded: encoded) else { return }
-            onEvent?(.samples(data, rms: Float((body["rms"] as? Double) ?? 0)))
+            let levels = (body["levels"] as? [Double])?.map(Float.init) ?? []
+            onEvent?(.samples(data, levels: levels))
         case "stopped":
             stopHeartbeat()
             let reason = (body["reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
@@ -240,16 +242,20 @@ final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WK
           if (!running && !flushed) return;
           const input = event.inputBuffer.getChannelData(0);
           const pcm = new Int16Array(input.length);
-          let squares = 0;
+          // One RMS per fifth of the buffer, so the keyboard's five level bars each show
+          // their own slice of the last 85 ms instead of one shared number.
+          const slices = 5, sliceLength = Math.max(1, Math.floor(input.length / slices));
+          const squares = new Float64Array(slices);
           for (let i = 0; i < input.length; i++) {
             const v = Math.max(-1, Math.min(1, input[i]));
-            squares += v * v;
+            squares[Math.min(slices - 1, Math.floor(i / sliceLength))] += v * v;
             pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
           }
+          const levels = Array.from(squares, (sum) => Math.sqrt(sum / sliceLength));
           const bytes = new Uint8Array(pcm.buffer);
           let binary = "";
           for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-          post({ type: "pcm", data: btoa(binary), rms: Math.sqrt(squares / Math.max(1, input.length)) });
+          post({ type: "pcm", data: btoa(binary), levels });
           if (flushed) flushed();
         };
         source.connect(node);

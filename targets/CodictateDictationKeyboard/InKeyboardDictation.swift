@@ -23,8 +23,9 @@ final class InKeyboardDictation {
 
     var onProcessing: ((String?) -> Void)?
     var onFinish: ((Outcome) -> Void)?
-    /// RMS level (0...1) of each captured buffer while recording, about 12 a second.
-    var onLevel: ((Float) -> Void)?
+    /// RMS levels (0...1) of each captured buffer's five slices while recording, about 12
+    /// buffers a second.
+    var onLevel: (([Float]) -> Void)?
 
     private enum Phase {
         case idle
@@ -202,10 +203,10 @@ final class InKeyboardDictation {
             } catch {
                 abandonCapture(fallBack: "could not create the WAV: \(error.localizedDescription)")
             }
-        case .samples(let data, let rms):
+        case .samples(let data, let levels):
             guard phase == .recording || phase == .stopping else { return }
             file?.append(data)
-            if phase == .recording { onLevel?(rms) }
+            if phase == .recording { onLevel?(levels) }
         case .stopped(let reason):
             guard phase == .recording || phase == .stopping else { return }
             captureEnded(reason: reason)

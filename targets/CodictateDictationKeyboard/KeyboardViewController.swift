@@ -132,8 +132,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         inKeyboard.onFinish = { [weak self] outcome in
             self?.finishInKeyboardTurn(outcome)
         }
-        inKeyboard.onLevel = { [weak self] rms in
-            self?.keyboardView.setInputLevel(rms)
+        inKeyboard.onLevel = { [weak self] levels in
+            self?.keyboardView.setInputLevels(levels)
         }
         NotificationCenter.default.addObserver(
             self, selector: #selector(parakeetLoadingChanged),

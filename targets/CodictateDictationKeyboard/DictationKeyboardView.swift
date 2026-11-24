@@ -360,8 +360,8 @@ final class DictationKeyboardView: UIView {
     }
 
     /// RMS of the latest captured buffer (In-keyboard path only).
-    func setInputLevel(_ rms: Float) {
-        pill.setInputLevel(rms)
+    func setInputLevels(_ levels: [Float]) {
+        pill.setInputLevels(levels)
     }
 
     /// Auto-capitalization from the controller; a locked shift stays locked.
