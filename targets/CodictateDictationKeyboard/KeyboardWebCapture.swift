@@ -61,7 +61,8 @@ final class KeyboardPCMFile {
 final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     enum Event {
         case started(sampleRate: Double)
-        case samples(Data)
+        /// One processor buffer (4,096 samples) and its RMS level, 0...1.
+        case samples(Data, rms: Float)
         /// The capture ended, with the audio the processor still held delivered first.
         /// `reason` is nil for a `stop()`, else why the page ended it by itself (its track
         /// ended, its context closed, or native's heartbeat stopped).
@@ -179,7 +180,7 @@ final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WK
             onEvent?(.started(sampleRate: (body["rate"] as? Double) ?? 48_000))
         case "pcm":
             guard let encoded = body["data"] as? String, let data = Data(base64Encoded: encoded) else { return }
-            onEvent?(.samples(data))
+            onEvent?(.samples(data, rms: Float((body["rms"] as? Double) ?? 0)))
         case "stopped":
             stopHeartbeat()
             let reason = (body["reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
@@ -239,14 +240,16 @@ final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDelegate, WK
           if (!running && !flushed) return;
           const input = event.inputBuffer.getChannelData(0);
           const pcm = new Int16Array(input.length);
+          let squares = 0;
           for (let i = 0; i < input.length; i++) {
             const v = Math.max(-1, Math.min(1, input[i]));
+            squares += v * v;
             pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
           }
           const bytes = new Uint8Array(pcm.buffer);
           let binary = "";
           for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-          post({ type: "pcm", data: btoa(binary) });
+          post({ type: "pcm", data: btoa(binary), rms: Math.sqrt(squares / Math.max(1, input.length)) });
           if (flushed) flushed();
         };
         source.connect(node);

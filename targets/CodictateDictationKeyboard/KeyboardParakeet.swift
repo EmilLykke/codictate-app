@@ -19,6 +19,9 @@ import Foundation
 final class KeyboardParakeet {
     static let shared = KeyboardParakeet()
 
+    /// Posted on the main thread when a load starts or ends; read `isLoading` and `isLoaded`.
+    static let loadingDidChange = Notification.Name("KeyboardParakeet.loadingDidChange")
+
     /// `<App Group>/FluidAudio/Models/parakeet-tdt-0.6b-v3/`, where the Host keeps Parakeet.
     /// The leaf must stay FluidAudio's folder name, because `AsrModels.load(from:)` reads
     /// `directory.deletingLastPathComponent()/<folderName>`.
@@ -47,7 +50,12 @@ final class KeyboardParakeet {
     static let neuralEngineEvidence = 100 * KeyboardParakeetBudget.megabyte
 
     private var manager: AsrManager?
-    private var loadTask: Task<AsrManager?, Never>?
+    private var loadTask: Task<AsrManager?, Never>? {
+        didSet {
+            guard (oldValue == nil) != (loadTask == nil) else { return }
+            NotificationCenter.default.post(name: Self.loadingDidChange, object: self)
+        }
+    }
     private(set) var isSetAside = false
     private var memoryWarnedAt: Date?
     private var isTranscribing = false

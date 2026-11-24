@@ -47,6 +47,7 @@ const EXTENSION_SOURCES = [
   "InKeyboardDictation.swift",
   "KeyboardWebCapture.swift",
   "KeyboardParakeet.swift",
+  "DictatePill.swift",
 ];
 
 /** Dropped from the extension's Sources phase when a legacy layout still compiles them there. */

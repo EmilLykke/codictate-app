@@ -29,7 +29,7 @@ Passive Dynamic Island / lock-screen state after keyboard dictation completes. S
 
 ## Keyboard dictate button (visual states)
 
-On the Codictate keyboard extension, the Dictate key uses color to show phase: **red** while recording (stop icon), **orange** while transcribing/processing (waveform icon). Idle uses a light red-tinted key background. Distinct from the host app's orange mic indicator during a keyboard warm session.
+On the Codictate keyboard extension, the Dictate button is a full-width pill above the keys (`DictatePill`). Each phase has a fill, a glyph and a label: **idle** is a light red tint with a mic and "Dictate"; **recording** is red with a stop glyph, a five-bar level meter and an elapsed timer (the bars follow the audio on the In-keyboard path and breathe slowly on the Warm and Cold paths, where the keyboard hears nothing); **transcribing** is orange with a spinner and "Transcribing…"; a delivered transcript shows a checkmark and "Inserted" on the idle tint for about a second. Errors go in red in the status line under the pill, with the pill back at idle. Distinct from the host app's orange mic indicator during a keyboard warm session.
 
 ## First-time Parakeet processing
 

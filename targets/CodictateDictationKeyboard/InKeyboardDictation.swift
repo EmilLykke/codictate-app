@@ -23,6 +23,8 @@ final class InKeyboardDictation {
 
     var onProcessing: ((String?) -> Void)?
     var onFinish: ((Outcome) -> Void)?
+    /// RMS level (0...1) of each captured buffer while recording, about 12 a second.
+    var onLevel: ((Float) -> Void)?
 
     private enum Phase {
         case idle
@@ -54,6 +56,8 @@ final class InKeyboardDictation {
     private static let filePrefix = "kbd-local-"
 
     var isActive: Bool { phase != .idle }
+    /// Capturing and not yet stopped: a tap now stops the turn.
+    var isRecording: Bool { phase == .recording }
 
     /// Back to idle; the model may go on a memory warning again.
     private func endTurn() {
@@ -191,9 +195,10 @@ final class InKeyboardDictation {
             } catch {
                 abandonCapture(fallBack: "could not create the WAV: \(error.localizedDescription)")
             }
-        case .samples(let data):
+        case .samples(let data, let rms):
             guard phase == .recording || phase == .stopping else { return }
             file?.append(data)
+            if phase == .recording { onLevel?(rms) }
         case .stopped(let reason):
             guard phase == .recording || phase == .stopping else { return }
             captureEnded(reason: reason)
