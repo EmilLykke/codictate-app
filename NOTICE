@@ -48,6 +48,14 @@ adapts code from two projects under the MIT License:
   Copyright (c) 2026 Stephan Cilliers: the native heartbeat and page watchdog
   that stop the microphone when the keyboard stops pinging.
 
+The Formatting AU (targets/CodictateFormattingAU: FormattingAU.swift,
+FormattingAUMessageChannel.swift, FormattingAUContract.swift) and its keyboard client
+(targets/CodictateDictationKeyboard/KeyboardFormattingAUClient.swift) adapt source
+code from KeyVox (https://github.com/macmixing/keyvox), Copyright (c) 2026
+Dominic Esposito, under the MIT License: hosting an out-of-process Audio Unit
+extension from a keyboard and exchanging messages with it over AUMessageChannel.
+Only MIT-licensed source code is used; none of KeyVox's excluded assets or branding.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

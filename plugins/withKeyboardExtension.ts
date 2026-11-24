@@ -38,8 +38,10 @@ const DEPLOYMENT_TARGET = "17.0";
 
 /**
  * Keyboard extension: UI, the App Group bridge, and the In-keyboard path (WebKit capture +
- * Parakeet through FluidAudio, which withFluidAudio links to this target). Every file here
- * must also be in targets/CodictateDictationKeyboard/, which Step 1 copies wholesale.
+ * Parakeet through FluidAudio, which withFluidAudio links to this target, and the client of
+ * the Formatting AU). Every file here must also be in targets/CodictateDictationKeyboard/,
+ * which Step 1 copies wholesale. withFormattingAU adds the AU's contract and the App Group
+ * log, which both targets compile.
  */
 const EXTENSION_SOURCES = [
   "KeyboardViewController.swift",
@@ -47,6 +49,7 @@ const EXTENSION_SOURCES = [
   "InKeyboardDictation.swift",
   "KeyboardWebCapture.swift",
   "KeyboardParakeet.swift",
+  "KeyboardFormattingAUClient.swift",
   "DictatePill.swift",
 ];
 
@@ -681,6 +684,13 @@ function syncKeyboardExtensionAndWireHostTranscription(
     ensureSourceFileBuiltByMainAppTarget(
       project,
       `${appTargetName}/FormattingManager.swift`,
+      hostSourceGroup,
+      appUuid,
+    );
+    // Shared with the Formatting AU, which withFormattingAU links to the same file.
+    ensureSourceFileBuiltByMainAppTarget(
+      project,
+      `${appTargetName}/S1MiniFormatter.swift`,
       hostSourceGroup,
       appUuid,
     );

@@ -96,13 +96,13 @@ final class KeyboardParakeet {
     func warmUp() -> Bool {
         if isLoaded || isLoading { return true }
         if let reason = loadBlockedReason() {
-            NSLog("[Keyboard] Parakeet not loaded: \(reason)")
+            AppGroupLog.write("[Keyboard] Parakeet not loaded: \(reason)")
             return false
         }
         guard let directory = Self.modelDirectory else { return false }
         let started = Date()
         let neuralBefore = Self.memory().neural
-        NSLog("[Keyboard] Parakeet loading \(Self.memory())")
+        AppGroupLog.write("[Keyboard] Parakeet loading \(Self.memory())")
         loadTask = Task { @MainActor [weak self] in
             do {
                 let manager = try await Self.load(from: directory)
@@ -122,7 +122,7 @@ final class KeyboardParakeet {
                 }
                 self.manager = manager
                 let kind = seconds >= Self.compilingLoad ? "cold" : "warm"
-                NSLog("[Keyboard] Parakeet loaded in \(String(format: "%.1f", seconds)) s (\(kind)) \(after)")
+                AppGroupLog.write("[Keyboard] Parakeet loaded in \(String(format: "%.1f", seconds)) s (\(kind)) \(after)")
                 return manager
             } catch {
                 guard let self else { return nil }
@@ -155,7 +155,7 @@ final class KeyboardParakeet {
         ) {
             // Checked for the longest turn at the tap; memory moved since. Try anyway: not
             // trying loses the dictation for certain.
-            NSLog("[Keyboard] Parakeet transcribing short of memory \(before)")
+            AppGroupLog.write("[Keyboard] Parakeet transcribing short of memory \(before)")
         }
         isTranscribing = true
         defer {
@@ -166,7 +166,7 @@ final class KeyboardParakeet {
         let layers = await manager.decoderLayerCount
         var state = TdtDecoderState.make(decoderLayers: layers)
         let result = try await manager.transcribe(url, decoderState: &state)
-        NSLog(String(
+        AppGroupLog.write(String(
             format: "[Keyboard] Parakeet transcribed %.1f s of audio in %.2f s, footprint before %.1f MB, after %@",
             audioSeconds, Date().timeIntervalSince(started), Self.mb(before.footprint), Self.memory().description
         ))
@@ -194,7 +194,7 @@ final class KeyboardParakeet {
     /// The In-keyboard path is off for the rest of this process.
     func setAside(_ reason: String) {
         isSetAside = true
-        NSLog("[Keyboard] In-keyboard path set aside: \(reason)")
+        AppGroupLog.write("[Keyboard] In-keyboard path set aside: \(reason)")
         release(reason: "set aside")
     }
 
@@ -202,7 +202,7 @@ final class KeyboardParakeet {
         guard let current = manager else { return }
         manager = nil
         Task { await current.cleanup() }
-        NSLog("[Keyboard] Parakeet released (\(reason)) \(Self.memory())")
+        AppGroupLog.write("[Keyboard] Parakeet released (\(reason)) \(Self.memory())")
     }
 
     // MARK: - Loading

@@ -14,8 +14,20 @@ Keyboard writes `phase=start` to the App Group and posts a Darwin notification. 
 
 ## In-keyboard path
 
-The keyboard records and transcribes a Dictation turn itself, without opening the Host, even when the app is closed. It captures with `getUserMedia` in a hidden `WKWebView` (WebKit records in its own process, so the keyboard's microphone restriction does not apply) and transcribes with Parakeet on the Neural Engine through FluidAudio, loading the Host's models from the App Group. It writes no phase to the App Group. Eligible only with Full Access, Parakeet as the Speech Model and ready, automatic Transcription Language, microphone granted, a Neural Engine and 5 GiB of memory, room in the keyboard's memory limit, no Host warm session, and an idle shared phase; otherwise the keyboard uses the Warm or Cold path. S1-mini does not block it: S1-mini cannot run in the keyboard, so a warm Host records and formats as before, and without one the keyboard inserts Parakeet's text unformatted. A capture that fails to start hands that tap to the Cold path; a failed load or transcription sets the path aside for the keyboard process.
+The keyboard records and transcribes a Dictation turn itself, without opening the Host, even when the app is closed. It captures with `getUserMedia` in a hidden `WKWebView` (WebKit records in its own process, so the keyboard's microphone restriction does not apply) and transcribes with Parakeet on the Neural Engine through FluidAudio, loading the Host's models from the App Group. It writes no phase to the App Group. Eligible only with Full Access, Parakeet as the Speech Model and ready, automatic Transcription Language, microphone granted, a Neural Engine and 5 GiB of memory, room in the keyboard's memory limit, no Host warm session, and an idle shared phase; otherwise the keyboard uses the Warm or Cold path. S1-mini does not block it: S1-mini cannot run in the keyboard, so a warm Host records and formats as before, and without one the keyboard has the Formatting AU format Parakeet's text. A capture that fails to start hands that tap to the Cold path; a failed load or transcription sets the path aside for the keyboard process.
 _Avoid_: local dictation, keyboard ASR.
+
+## Formatting AU
+
+The `CodictateFormattingAU` extension: an Audio Unit with no interface and no audio work
+that the keyboard hosts out of process, so an In-keyboard Dictation turn gets S1-mini
+without the Host. It is the UI kind of Audio Unit extension (`com.apple.AudioUnit-UI`)
+because iOS gives that kind no hard memory ceiling, unlike the keyboard. It runs the Host's
+own S1-mini code (`S1MiniFormatter`, `S1MiniBridge`) on the App Group's model, loads it
+when an In-keyboard turn starts and frees it when the keyboard goes away. Like the Host's
+cleanup it never fails a Dictation turn: on any fault or after its timeout the keyboard
+inserts Parakeet's text. Internal vocabulary; it never appears in user-facing copy.
+_Avoid_: plugin, effect, formatting extension.
 
 ## Keyboard warm session / listen session
 
@@ -29,11 +41,11 @@ Passive Dynamic Island / lock-screen state after keyboard dictation completes. S
 
 ## Keyboard dictate button (visual states)
 
-On the Codictate keyboard extension, the Dictate button is a full-width pill above the keys (`DictatePill`). Each phase has a fill, a glyph and a label: **idle** is a light red tint with a mic and "Dictate"; **recording** is red with a stop glyph, a five-bar level meter and an elapsed timer (the bars follow the audio on the In-keyboard path and breathe slowly on the Warm and Cold paths, where the keyboard hears nothing); **transcribing** is orange with a spinner and "Transcribing…"; a delivered transcript shows a checkmark and "Inserted" on the idle tint for about a second. Errors go in red in the status line under the pill, with the pill back at idle. Distinct from the host app's orange mic indicator during a keyboard warm session.
+On the Codictate keyboard extension, the Dictate button is a small capsule (`DictatePill`) at the right of a quiet 44 pt strip above the keys, with only the dismiss glyph at the strip's left. It carries no text: each phase has a fill and a glyph. **Idle** is a key-colored capsule (white in light mode, the dark key grey in dark mode, with the keys' shadow) and a mic; while Parakeet's first-time load runs (**preparing**) the mic dims beside a small spinner. **Recording** is red with five white level bars (they follow the audio on the In-keyboard path and breathe slowly on the Warm and Cold paths, where the keyboard hears nothing). **Transcribing** is orange with a white spinner; a delivered transcript shows a checkmark on the idle capsule for about a second. An error is the only text the strip ever shows: one short red line between the dismiss glyph and the capsule that fades out after about 3 seconds, with the capsule back at idle. Distinct from the host app's orange mic indicator during a keyboard warm session.
 
 ## First-time Parakeet processing
 
-Parakeet models load lazily via FluidAudio `AsrModels.downloadAndLoad` on the first transcribe of a install. While `parakeetModelReady` is false, keyboard strip and Live Activity show extended copy ("first use may take a minute"). After the first successful transcribe, processing UI returns to generic "Transcribing...". On the In-keyboard path the keyboard compiles its own copy for the Neural Engine once per build (about 15 s), and shows the same keyboard copy when that load is still running at the stop.
+Parakeet models load lazily via FluidAudio `AsrModels.downloadAndLoad` on the first transcribe of a install. While `parakeetModelReady` is false, the Live Activity shows extended copy ("first use may take a minute") and the keyboard's Dictate capsule shows its processing spinner. After the first successful transcribe, processing UI returns to generic "Transcribing...". On the In-keyboard path the keyboard compiles its own copy for the Neural Engine once per build (about 15 s); while that load runs, the idle capsule shows its dimmed mic with a small spinner (VoiceOver: "Getting ready").
 
 ## Host
 

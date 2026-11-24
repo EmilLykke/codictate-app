@@ -130,7 +130,7 @@ final class KeyboardKey: UIControl {
     private func refresh() {
         // Outside any animation block: the change is instant.
         fill.backgroundColor = currentFill
-        let foreground: UIColor = isEngaged ? .black : .label
+        let foreground: UIColor = isEngaged ? .black : (style == .toolbar ? .secondaryLabel : .label)
         label.textColor = foreground
         icon.tintColor = foreground
     }
@@ -219,20 +219,22 @@ final class DictationKeyboardView: UIView {
 
     weak var delegate: DictationKeyboardViewDelegate?
 
-    static let preparingMessage = "Getting Parakeet ready (first time only)"
-
     private enum Page { case letters, numbers, symbols }
     private enum Shift { case off, on, locked }
 
     private enum Metrics {
-        static let height: CGFloat = 264
-        static let pillTop: CGFloat = 6
-        /// The status line between the pill and the keys; empty most of the time, it doubles
-        /// as the gap above the top row.
-        static let statusHeight: CGFloat = 18
+        /// Strip (44) + gap (4) + four 42 pt rows with 10 pt gaps (198) + bottom inset (4).
+        static let height: CGFloat = 250
+        /// The strip above the keys: dismiss at the left, Dictate at the right, error text
+        /// between them only when there is one. No fill of its own.
+        static let stripHeight: CGFloat = 44
+        static let stripGap: CGFloat = 4
         static let sideInset: CGFloat = 3
+        static let stripSideInset: CGFloat = 8
         static let bottomInset: CGFloat = 4
-        static let rowSpacing: CGFloat = 8
+        static let rowSpacing: CGFloat = 10
+        /// Error text shows for this long, then fades.
+        static let errorVisibleFor: TimeInterval = 3
         static let keySpacing: CGFloat = 6
         static let sideKeyWidth: CGFloat = 1.3
         static let returnKeyWidth: CGFloat = 2.6
@@ -257,7 +259,9 @@ final class DictationKeyboardView: UIView {
 
     private let pill = DictatePill()
     private let dismissKey = KeyboardKey(style: .toolbar)
-    private let statusLabel = UILabel()
+    /// The only text in the strip, and only for errors.
+    private let errorLabel = UILabel()
+    private var errorGeneration = 0
     private let keyArea = KeyArea()
     private let preview = KeyPreview()
     /// The globe. The controller wires it to `handleInputModeList(from:with:)`.
@@ -291,7 +295,6 @@ final class DictationKeyboardView: UIView {
     private var lastShiftTapAt: CFTimeInterval = 0
 
     private var state: DictationViewState = .idle
-    private var isPreparing = false
 
     private var deleteTimer: Timer?
     private var deleteStartedAt: CFTimeInterval = 0
@@ -328,6 +331,11 @@ final class DictationKeyboardView: UIView {
     func apply(state newState: DictationViewState) {
         guard newState != state else { return }
         state = newState
+        if case .processing(let message) = newState {
+            pill.processingDetail = message
+        } else {
+            pill.processingDetail = nil
+        }
         switch newState {
         case .idle, .error:
             pill.setMode(.idle)
@@ -338,14 +346,17 @@ final class DictationKeyboardView: UIView {
         case .result:
             pill.setMode(.done)
         }
-        updateStatus()
+        if case .error(let message) = newState {
+            showError(message)
+        } else {
+            hideError()
+        }
     }
 
     /// Parakeet is loading in this keyboard process for long enough to be a first-time compile.
+    /// Shown inside the idle Dictate button (dimmed mic, small spinner), never as text.
     func setPreparing(_ preparing: Bool) {
-        guard preparing != isPreparing else { return }
-        isPreparing = preparing
-        updateStatus()
+        pill.setPreparing(preparing)
     }
 
     /// RMS of the latest captured buffer (In-keyboard path only).
@@ -370,40 +381,52 @@ final class DictationKeyboardView: UIView {
         returnKey.setTitle(title, size: 16)
     }
 
-    private func updateStatus() {
-        let text: String
-        let color: UIColor
-        switch state {
-        case .error(let message):
-            text = message
-            color = .systemRed
-        case .processing(let message):
-            // The pill already says "Transcribing…"; the line keeps the rest of the message.
-            let prefix = "Transcribing. "
-            let full = message ?? ""
-            text = full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : full
-            color = .secondaryLabel
-        case .idle, .recording:
-            text = isPreparing ? Self.preparingMessage : ""
-            color = .secondaryLabel
-        case .result:
-            text = ""
-            color = .secondaryLabel
-        }
-        guard statusLabel.text != text || statusLabel.textColor != color else { return }
-        UIView.transition(
-            with: statusLabel, duration: KeyboardMotion.colorDuration,
-            options: [.transitionCrossDissolve, .beginFromCurrentState, .curveEaseOut, .allowUserInteraction]
+    // MARK: Error text
+
+    private func showError(_ message: String) {
+        errorGeneration += 1
+        let generation = errorGeneration
+        errorLabel.layer.removeAllAnimations()
+        errorLabel.text = message
+        errorLabel.transform = .identity
+        errorLabel.accessibilityLabel = message
+        UIView.animate(
+            withDuration: KeyboardMotion.textInDuration, delay: 0,
+            options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction]
         ) {
-            self.statusLabel.text = text
-            self.statusLabel.textColor = color
+            self.errorLabel.alpha = 1
+        }
+        UIAccessibility.post(notification: .announcement, argument: message)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Metrics.errorVisibleFor) { [weak self] in
+            guard let self, self.errorGeneration == generation else { return }
+            self.hideError()
+        }
+    }
+
+    /// Fades out, drifting down a few points; Reduce Motion fades only.
+    private func hideError() {
+        guard errorLabel.text != nil else { return }
+        errorGeneration += 1
+        let generation = errorGeneration
+        let drift = UIAccessibility.isReduceMotionEnabled
+            ? CGAffineTransform.identity : CGAffineTransform(translationX: 0, y: KeyboardMotion.textOutOffset)
+        UIView.animate(
+            withDuration: KeyboardMotion.textOutDuration, delay: 0,
+            options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction]
+        ) {
+            self.errorLabel.alpha = 0
+            self.errorLabel.transform = drift
+        } completion: { [weak self] _ in
+            guard let self, self.errorGeneration == generation else { return }
+            self.errorLabel.text = nil
+            self.errorLabel.transform = .identity
         }
     }
 
     // MARK: Build
 
     private func build() {
-        dismissKey.setSymbol("keyboard.chevron.compact.down", size: 18, accessibilityLabel: "Hide keyboard")
+        dismissKey.setSymbol("keyboard.chevron.compact.down", size: 17, accessibilityLabel: "Hide keyboard")
         dismissKey.addTarget(self, action: #selector(keyDown), for: .touchDown)
         dismissKey.addTarget(self, action: #selector(dismissTapped), for: .touchUpInside)
         addSubview(dismissKey)
@@ -419,13 +442,16 @@ final class DictationKeyboardView: UIView {
         }
         addSubview(keyArea)
 
-        statusLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.textAlignment = .center
-        statusLabel.adjustsFontSizeToFitWidth = true
-        statusLabel.minimumScaleFactor = 0.8
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(statusLabel)
+        errorLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        errorLabel.textColor = .systemRed
+        errorLabel.textAlignment = .center
+        errorLabel.numberOfLines = 1
+        errorLabel.lineBreakMode = .byTruncatingTail
+        errorLabel.adjustsFontSizeToFitWidth = true
+        errorLabel.minimumScaleFactor = 0.85
+        errorLabel.alpha = 0
+        errorLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(errorLabel)
 
         let rows = UIStackView()
         rows.axis = .vertical
@@ -479,28 +505,29 @@ final class DictationKeyboardView: UIView {
         NSLayoutConstraint.activate(deferredConstraints)
         deferredConstraints = []
         NSLayoutConstraint.activate([
-            pill.topAnchor.constraint(equalTo: topAnchor, constant: Metrics.pillTop),
-            pill.heightAnchor.constraint(equalToConstant: DictatePill.height),
-            pill.leadingAnchor.constraint(equalTo: dismissKey.trailingAnchor, constant: 4),
-            pill.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Metrics.sideInset),
+            // Dictate: a small capsule at the strip's right, inset a little more than the keys
+            // so it clears the keyboard's rounded top corner.
+            pill.centerYAnchor.constraint(equalTo: topAnchor, constant: Metrics.stripHeight / 2),
+            pill.widthAnchor.constraint(equalToConstant: DictatePill.size.width),
+            pill.heightAnchor.constraint(equalToConstant: DictatePill.size.height),
+            pill.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Metrics.stripSideInset),
 
             dismissKey.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.sideInset),
-            dismissKey.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+            dismissKey.topAnchor.constraint(equalTo: topAnchor),
             dismissKey.widthAnchor.constraint(equalToConstant: 44),
-            dismissKey.heightAnchor.constraint(equalToConstant: 44),
+            dismissKey.heightAnchor.constraint(equalToConstant: Metrics.stripHeight),
 
-            statusLabel.topAnchor.constraint(equalTo: pill.bottomAnchor),
-            statusLabel.heightAnchor.constraint(equalToConstant: Metrics.statusHeight),
-            statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            statusLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            errorLabel.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+            errorLabel.leadingAnchor.constraint(equalTo: dismissKey.trailingAnchor, constant: 4),
+            errorLabel.trailingAnchor.constraint(equalTo: pill.leadingAnchor, constant: -12),
 
-            // The key area starts just under the pill so near-misses above the top row snap to it.
-            keyArea.topAnchor.constraint(equalTo: pill.bottomAnchor, constant: 2),
+            // The key area starts at the strip's bottom so near-misses above the top row snap to it.
+            keyArea.topAnchor.constraint(equalTo: topAnchor, constant: Metrics.stripHeight),
             keyArea.leadingAnchor.constraint(equalTo: leadingAnchor),
             keyArea.trailingAnchor.constraint(equalTo: trailingAnchor),
             keyArea.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            rows.topAnchor.constraint(equalTo: statusLabel.bottomAnchor),
+            rows.topAnchor.constraint(equalTo: keyArea.topAnchor, constant: Metrics.stripGap),
             rows.leadingAnchor.constraint(equalTo: keyArea.leadingAnchor, constant: Metrics.sideInset),
             rows.trailingAnchor.constraint(equalTo: keyArea.trailingAnchor, constant: -Metrics.sideInset),
             rows.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor, constant: -Metrics.bottomInset),

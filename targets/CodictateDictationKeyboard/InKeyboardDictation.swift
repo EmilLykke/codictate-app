@@ -53,6 +53,7 @@ final class InKeyboardDictation {
     /// (Dictus saw `context-interrupted` right after the app switcher).
     static let shortestCapture: TimeInterval = 0.5
     static let firstUseMessage = "Transcribing. First use may take a minute..."
+    static let formattingMessage = "Formatting\u{2026}"
     private static let filePrefix = "kbd-local-"
 
     var isActive: Bool { phase != .idle }
@@ -91,7 +92,8 @@ final class InKeyboardDictation {
         else { return (false, "microphone not granted") }
         guard KeyboardParakeet.deviceFits else { return (false, "no Neural Engine or under 5 GiB") }
         // S1-mini does not block: it cannot run in the keyboard, so a warm Host (checked
-        // below) formats as before, and without one the keyboard inserts Parakeet's text.
+        // below) formats as before, and without one the Formatting AU formats Parakeet's
+        // text out of process (`KeyboardFormattingAUClient`).
         guard forTap else { return (true, "eligible") }
 
         // A listening Host already records and formats without a switch; two microphone
@@ -138,14 +140,18 @@ final class InKeyboardDictation {
         otherAudioAtStart = AVAudioSession.sharedInstance().isOtherAudioPlaying
         capture?.start()
         autoStopTimer = scheduledTimer(Self.autoStopAfterSeconds) { [weak self] in
-            NSLog("[Keyboard] In-keyboard auto-stop after \(Int(Self.autoStopAfterSeconds)) s")
+            AppGroupLog.write("[Keyboard] In-keyboard auto-stop after \(Int(Self.autoStopAfterSeconds)) s")
             self?.stop()
         }
         firstAudioTimer = scheduledTimer(Self.firstAudioDeadline) { [weak self] in
             guard let self, self.phase == .recording, (self.file?.frames ?? 0) == 0 else { return }
             self.abandonCapture(fallBack: "no audio \(Self.firstAudioDeadline) s after the tap")
         }
-        NSLog("[Keyboard] In-keyboard turn started \(KeyboardParakeet.memory())")
+        AppGroupLog.write("[Keyboard] In-keyboard turn started \(KeyboardParakeet.memory())")
+        // S1-mini loads in the Formatting AU's process while the user speaks.
+        if KeyboardFormattingAUClient.isWanted(suite: Self.suite) {
+            KeyboardFormattingAUClient.shared.prewarm()
+        }
         return true
     }
 
@@ -159,7 +165,7 @@ final class InKeyboardDictation {
         // A page that never loaded, or a process that went quiet, posts no `stopped`.
         stopTimeoutTimer = scheduledTimer(1.5) { [weak self] in
             guard let self, self.phase == .stopping else { return }
-            NSLog("[Keyboard] In-keyboard capture did not confirm its stop")
+            AppGroupLog.write("[Keyboard] In-keyboard capture did not confirm its stop")
             self.captureEnded(reason: "stop not confirmed")
         }
     }
@@ -167,9 +173,10 @@ final class InKeyboardDictation {
     /// The keyboard is going away: stop the microphone and discard everything.
     func cancel() {
         guard phase != .idle else { return }
-        NSLog("[Keyboard] In-keyboard turn discarded (keyboard hidden)")
+        AppGroupLog.write("[Keyboard] In-keyboard turn discarded (keyboard hidden)")
         generation += 1
         let wasCapturing = phase == .recording || phase == .stopping
+        if phase == .transcribing { KeyboardFormattingAUClient.shared.cancel() }
         endTurn()
         invalidateTimers()
         if wasCapturing { capture?.stop() }
@@ -191,7 +198,7 @@ final class InKeyboardDictation {
             guard phase == .recording || phase == .stopping, file == nil else { return }
             do {
                 file = try KeyboardPCMFile(url: try Self.newRecordingURL(), sampleRate: sampleRate)
-                NSLog("[Keyboard] In-keyboard capture started at \(Int(sampleRate)) Hz")
+                AppGroupLog.write("[Keyboard] In-keyboard capture started at \(Int(sampleRate)) Hz")
             } catch {
                 abandonCapture(fallBack: "could not create the WAV: \(error.localizedDescription)")
             }
@@ -220,7 +227,7 @@ final class InKeyboardDictation {
         releaseAudioSession()
         let seconds = file?.seconds ?? 0
         file?.close()
-        if let reason { NSLog("[Keyboard] In-keyboard capture ended: \(reason), \(String(format: "%.1f", seconds)) s") }
+        if let reason { AppGroupLog.write("[Keyboard] In-keyboard capture ended: \(reason), \(String(format: "%.1f", seconds)) s") }
 
         if seconds < Self.shortestCapture {
             discardFile()
@@ -234,7 +241,7 @@ final class InKeyboardDictation {
 
     /// Ends a capture that never got going and hands the tap to the existing path.
     private func abandonCapture(fallBack reason: String) {
-        NSLog("[Keyboard] In-keyboard capture abandoned: \(reason)")
+        AppGroupLog.write("[Keyboard] In-keyboard capture abandoned: \(reason)")
         generation += 1
         endTurn()
         invalidateTimers()
@@ -259,10 +266,10 @@ final class InKeyboardDictation {
         let turn = generation
         let url = file.url
         Task { @MainActor [weak self] in
-            let outcome: Outcome
+            var outcome: Outcome
             do {
                 let text = try await parakeet.transcribe(url, audioSeconds: seconds)
-                // The Host delivers Parakeet's text unchanged and treats an empty one as no speech.
+                // The Host treats an empty transcript as no speech.
                 outcome = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .noSpeech : .text(text)
             } catch {
                 parakeet.setAside("transcription failed: \(error.localizedDescription)")
@@ -270,9 +277,41 @@ final class InKeyboardDictation {
             }
             try? FileManager.default.removeItem(at: url)
             guard let self, self.generation == turn else { return }
+            if case .text(let text) = outcome, KeyboardFormattingAUClient.isWanted(suite: Self.suite) {
+                self.onProcessing?(Self.formattingMessage)
+                outcome = await Self.format(text)
+                guard self.generation == turn else { return }
+            }
             self.file = nil
             self.endTurn()
             self.onFinish?(outcome)
+        }
+    }
+
+    // MARK: - Formatting
+
+    private static var suite: UserDefaults? { UserDefaults(suiteName: KbdSuite.suiteName) }
+
+    /// S1-mini in the Formatting AU, as the Host's `formatIfEligible` would run it. Never
+    /// fails the turn: any fault or the timeout gives back Parakeet's text, and a successful
+    /// empty cleanup is no speech, as on the Host.
+    private static func format(_ text: String) async -> Outcome {
+        let suite = suite
+        let result = await withCheckedContinuation { continuation in
+            KeyboardFormattingAUClient.shared.format(
+                text,
+                // Eligibility pins the In-keyboard path to the automatic Transcription Language.
+                languageId: suite?.string(forKey: KbdSuite.transcriptionLanguageKey) ?? "auto",
+                style: suite?.string(forKey: KbdSuite.formattingStyleKey),
+                context: suite?.string(forKey: KbdSuite.formattingContextKey),
+                timeout: KeyboardFormattingAUClient.timeout(for: text)
+            ) { continuation.resume(returning: $0) }
+        }
+        switch result {
+        case .formatted(let output):
+            return output.isEmpty ? .noSpeech : .text(output)
+        case .original:
+            return .text(text)
         }
     }
 
@@ -346,9 +385,9 @@ final class InKeyboardDictation {
                     try session.setCategory(.playback, mode: .default, options: [])
                     try session.setActive(true, options: [])
                     try session.setActive(false, options: .notifyOthersOnDeactivation)
-                    NSLog("[Keyboard] Asked interrupted audio to resume")
+                    AppGroupLog.write("[Keyboard] Asked interrupted audio to resume")
                 } catch {
-                    NSLog("[Keyboard] Asking interrupted audio to resume failed: \(error.localizedDescription)")
+                    AppGroupLog.write("[Keyboard] Asking interrupted audio to resume failed: \(error.localizedDescription)")
                 }
             }
         }

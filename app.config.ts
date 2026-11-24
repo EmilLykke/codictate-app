@@ -4,6 +4,7 @@ import withKeyboardExtension from "./plugins/withKeyboardExtension";
 import withFluidAudio from "./plugins/withFluidAudio";
 import withCrispASR from "./plugins/withCrispASR";
 import withLlama from "./plugins/withLlama";
+import withFormattingAU from "./plugins/withFormattingAU";
 import withParakeetCpp from "./plugins/withParakeetCpp";
 import withOnnxRuntime from "./plugins/withOnnxRuntime";
 
@@ -53,6 +54,16 @@ const config: ExpoConfig = {
               {
                 targetName: "CodictateDictationKeyboard",
                 bundleIdentifier: "app.codictate.keyboard",
+                entitlements: {
+                  "com.apple.security.application-groups": [
+                    "group.app.codictate",
+                  ],
+                  "inter-app-audio": true,
+                },
+              },
+              {
+                targetName: "CodictateFormattingAU",
+                bundleIdentifier: "app.codictate.formattingau",
                 entitlements: {
                   "com.apple.security.application-groups": [
                     "group.app.codictate",
@@ -128,8 +139,14 @@ const config: ExpoConfig = {
 // withOnnxRuntime (ekko and ekko-pnc) sit inside it for the same reason.
 // withFluidAudio sits inside withKeyboardExtension too, so it runs after the
 // keyboard extension target exists and can link FluidAudio to it.
+// withFormattingAU sits inside withLlama: it links the llama.xcframework reference
+// withLlama adds (were it first, withLlama would find the reference and skip
+// embedding llama in the app), and it needs the keyboard target and the app's
+// S1-mini sources that withKeyboardExtension adds.
 export default withKeyboardExtension(
   withFluidAudio(
-    withCrispASR(withLlama(withParakeetCpp(withOnnxRuntime(config)))),
+    withCrispASR(
+      withLlama(withFormattingAU(withParakeetCpp(withOnnxRuntime(config)))),
+    ),
   ),
 );

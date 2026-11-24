@@ -1,7 +1,7 @@
 import QuartzCore
 import UIKit
 
-/// Colors shared by the keys and the Dictate pill. Dynamic, so light and dark appearance
+/// Colors shared by the keys and the Dictate button. Dynamic, so light and dark appearance
 /// resolve on their own and no view has to watch trait changes.
 enum KeyboardPalette {
     private static func dynamic(light: UIColor, dark: UIColor) -> UIColor {
@@ -19,27 +19,25 @@ enum KeyboardPalette {
     /// Shift while on or locked.
     static let engagedKey = dynamic(light: .white, dark: UIColor(white: 0.92, alpha: 1))
 
-    /// Idle Dictate: a light red tint, opaque so its label keeps its contrast on any backdrop.
-    static let dictateIdleFill = dynamic(
-        light: UIColor(red: 1, green: 0.90, blue: 0.89, alpha: 1),
-        dark: UIColor(red: 0.33, green: 0.13, blue: 0.13, alpha: 1)
-    )
-    static let dictateIdleForeground = dynamic(
-        light: UIColor(red: 0.80, green: 0.12, blue: 0.10, alpha: 1),
-        dark: UIColor(red: 1, green: 0.62, blue: 0.60, alpha: 1)
-    )
+    /// Idle Dictate is a key like the letters: same fill, same shadow, a quiet glyph.
+    static let dictateIdleFill = characterKey
+    static let dictateIdleGlyph = UIColor.label
     static let dictateRecordingFill = UIColor.systemRed
     static let brandOrange = UIColor(red: 1, green: 140 / 255, blue: 60 / 255, alpha: 1)
 }
 
 /// Motion values for the keyboard. Keys typed hundreds of times a day never animate; the
-/// Dictate pill, used tens of times a day, gets short, interruptible motion.
+/// Dictate button, used tens of times a day, gets short, interruptible motion.
 enum KeyboardMotion {
     static let springDuration: TimeInterval = 0.3
     static let pressScale: CGFloat = 0.96
     /// Swapped glyphs shrink to this, never to 0.
     static let swapScale: CGFloat = 0.25
     static let colorDuration: TimeInterval = 0.15
+    /// Error text in the strip: quick in, slightly slower out.
+    static let textInDuration: TimeInterval = 0.15
+    static let textOutDuration: TimeInterval = 0.2
+    static let textOutOffset: CGFloat = 4
 
     static func spring(_ animations: @escaping () -> Void, completion: ((Bool) -> Void)? = nil) {
         UIView.animate(
@@ -61,8 +59,10 @@ enum KeyboardMotion {
 
 // MARK: - DictatePill
 
-/// The keyboard's main control: one large capsule that starts and stops a Dictation turn.
-/// Every mode has a static cue (fill color, glyph, label) and motion only on top of it.
+/// The Dictate button: a small capsule at the right of the strip above the keys. It carries
+/// no text; each mode has a static cue (fill color and glyph) and motion only on top of it.
+/// Idle is a key-colored capsule with a mic, recording is red with live level bars,
+/// transcribing is orange with a spinner, and a delivered transcript shows a checkmark.
 final class DictatePill: UIControl {
     enum Mode: Equatable {
         case idle
@@ -79,91 +79,76 @@ final class DictatePill: UIControl {
         }
     }
 
-    static let height: CGFloat = 44
+    static let size = CGSize(width: 60, height: 34)
+    /// The capsule is smaller than a finger; touches this close still land on it.
+    private static let minimumHitSize = CGSize(width: 72, height: 44)
+    private static let glyphFont = UIFont.systemFont(ofSize: 15, weight: .semibold)
 
     private(set) var mode: Mode = .idle
+    /// Parakeet's first-time load is running; shown only while idle.
+    private(set) var isPreparing = false
+    /// Spoken by VoiceOver while transcribing (the processing message), never drawn.
+    var processingDetail: String?
+
     private let fill = UIView()
     private let meter = LevelMeterView()
-    private let timerLabel = UILabel()
-    private let spinner = UIActivityIndicatorView(style: .medium)
-    private var idleGroup: PillGroup!
-    private var recordingGroup: PillGroup!
-    private var processingGroup: PillGroup!
-    private var doneGroup: PillGroup!
-    private var groups: [PillGroup] { [idleGroup, recordingGroup, processingGroup, doneGroup] }
+    private let processingSpinner = UIActivityIndicatorView(style: .medium)
+    private let preparingSpinner = UIActivityIndicatorView(style: .medium)
+    private var idleContent: UIView!
+    private var preparingContent: UIView!
+    private var recordingContent: UIView!
+    private var processingContent: UIView!
+    private var doneContent: UIView!
+    private var contents: [UIView] { [idleContent, preparingContent, recordingContent, processingContent, doneContent] }
     private var colorAnimator: UIViewPropertyAnimator?
     private var recordingStartedAt: Date?
-    private var clock: Timer?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         fill.isUserInteractionEnabled = false
         fill.backgroundColor = KeyboardPalette.dictateIdleFill
-        fill.layer.cornerRadius = Self.height / 2
+        fill.layer.cornerRadius = Self.size.height / 2
         fill.layer.cornerCurve = .continuous
         fill.translatesAutoresizingMaskIntoConstraints = false
         addSubview(fill)
         pinEdges(fill, to: self)
 
+        // The keys' shadow, so idle reads as one more key.
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.25
+        layer.shadowOpacity = 0.32
         layer.shadowRadius = 0
         layer.shadowOffset = CGSize(width: 0, height: 1)
 
-        let titleFont = UIFont.systemFont(ofSize: 17, weight: .semibold)
-
-        idleGroup = PillGroup(
-            glyph: Self.glyph("mic.fill", font: titleFont, color: KeyboardPalette.dictateIdleForeground,
-                              nudge: CGVector(dx: 0, dy: -0.5)),
-            rest: [Self.label("Dictate", font: titleFont, color: KeyboardPalette.dictateIdleForeground)]
+        // The mic's visual mass sits low (the stand); lift it half a point.
+        idleContent = addContent(
+            Self.glyph("mic.fill", color: KeyboardPalette.dictateIdleGlyph), nudge: CGVector(dx: 0, dy: -0.5)
         )
 
-        timerLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
-        timerLabel.textColor = .white
-        timerLabel.text = "0:00"
+        preparingSpinner.color = .secondaryLabel
+        preparingSpinner.hidesWhenStopped = false
+        preparingSpinner.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
+        let dimmedMic = Self.glyph("mic.fill", color: KeyboardPalette.dictateIdleGlyph)
+        dimmedMic.alpha = 0.4
+        let preparing = UIStackView(arrangedSubviews: [dimmedMic, Self.slot(for: preparingSpinner, side: 12)])
+        preparing.axis = .horizontal
+        preparing.alignment = .center
+        preparing.spacing = 3
+        preparingContent = addContent(preparing, nudge: CGVector(dx: 0, dy: -0.5))
+
         meter.tintColor = .white
-        recordingGroup = PillGroup(
-            glyph: Self.glyph("stop.fill", font: UIFont.systemFont(ofSize: 14, weight: .bold), color: .white,
-                              nudge: .zero),
-            rest: [meter, timerLabel],
-            spacing: 10
+        recordingContent = addContent(meter, nudge: .zero)
+
+        processingSpinner.color = .white
+        processingSpinner.hidesWhenStopped = false
+        processingSpinner.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
+        processingContent = addContent(Self.slot(for: processingSpinner, side: 15), nudge: .zero)
+
+        // A checkmark's weight sits left of its box center; nudge it right.
+        doneContent = addContent(
+            Self.glyph("checkmark", color: KeyboardPalette.dictateIdleGlyph), nudge: CGVector(dx: 0.5, dy: 0)
         )
 
-        spinner.color = .white
-        spinner.hidesWhenStopped = false
-        spinner.translatesAutoresizingMaskIntoConstraints = false
-        let spinnerSlot = UIView()
-        spinnerSlot.translatesAutoresizingMaskIntoConstraints = false
-        spinnerSlot.addSubview(spinner)
-        NSLayoutConstraint.activate([
-            spinnerSlot.widthAnchor.constraint(equalToConstant: 22),
-            spinnerSlot.heightAnchor.constraint(equalToConstant: 22),
-            spinner.centerXAnchor.constraint(equalTo: spinnerSlot.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: spinnerSlot.centerYAnchor),
-        ])
-        spinner.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
-        processingGroup = PillGroup(
-            glyph: spinnerSlot,
-            rest: [Self.label("Transcribing\u{2026}", font: titleFont, color: .white)]
-        )
-
-        doneGroup = PillGroup(
-            glyph: Self.glyph("checkmark", font: UIFont.systemFont(ofSize: 16, weight: .bold),
-                              color: KeyboardPalette.dictateIdleForeground, nudge: CGVector(dx: 0, dy: 0.5)),
-            rest: [Self.label("Inserted", font: titleFont, color: KeyboardPalette.dictateIdleForeground)]
-        )
-
-        for group in groups {
-            addSubview(group)
-            NSLayoutConstraint.activate([
-                group.centerXAnchor.constraint(equalTo: centerXAnchor),
-                group.centerYAnchor.constraint(equalTo: centerYAnchor),
-                group.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16),
-                group.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16),
-            ])
-            group.alpha = group === idleGroup ? 1 : 0
-        }
-
+        idleContent.alpha = 1
         isAccessibilityElement = true
         updateAccessibility()
 
@@ -175,9 +160,17 @@ final class DictatePill: UIControl {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    override var intrinsicContentSize: CGSize { Self.size }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).cgPath
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let dx = max(0, (Self.minimumHitSize.width - bounds.width) / 2)
+        let dy = max(0, (Self.minimumHitSize.height - bounds.height) / 2)
+        return bounds.insetBy(dx: -dx, dy: -dy).contains(point)
     }
 
     // MARK: Mode
@@ -187,39 +180,47 @@ final class DictatePill: UIControl {
         let wasRecording = mode.isRecording
         mode = newMode
 
-        let target: PillGroup
         let fillColor: UIColor
         switch newMode {
-        case .idle:
-            target = idleGroup
+        case .idle, .done:
             fillColor = KeyboardPalette.dictateIdleFill
         case .recording(let live):
-            target = recordingGroup
             fillColor = KeyboardPalette.dictateRecordingFill
-            if !wasRecording { startClock() }
+            if !wasRecording { recordingStartedAt = Date() }
             meter.start(live: live)
         case .processing:
-            target = processingGroup
             fillColor = KeyboardPalette.brandOrange
-            spinner.startAnimating()
-        case .done:
-            target = doneGroup
-            fillColor = KeyboardPalette.dictateIdleFill
         }
         if !newMode.isRecording {
-            stopClock()
+            recordingStartedAt = nil
             meter.stop()
         }
-        // The pill takes no taps while transcribing, as before.
+        // The button takes no taps while transcribing, as before.
         isEnabled = newMode != .processing
-        show(target, animated: animated)
+        show(currentContent, animated: animated)
         setFill(fillColor, animated: animated)
+        updateAccessibility()
+    }
+
+    func setPreparing(_ preparing: Bool, animated: Bool = true) {
+        guard preparing != isPreparing else { return }
+        isPreparing = preparing
+        if mode == .idle { show(currentContent, animated: animated) }
         updateAccessibility()
     }
 
     /// Linear RMS of the latest buffer, 0...1. Only drawn on the In-keyboard path.
     func setInputLevel(_ rms: Float) {
         meter.push(rms: rms)
+    }
+
+    private var currentContent: UIView {
+        switch mode {
+        case .idle: return isPreparing ? preparingContent : idleContent
+        case .recording: return recordingContent
+        case .processing: return processingContent
+        case .done: return doneContent
+        }
     }
 
     // MARK: Press feedback
@@ -243,44 +244,51 @@ final class DictatePill: UIControl {
 
     // MARK: Transitions
 
-    /// Cross-fades to `group`: both glyphs stay in the tree, the outgoing one shrinks to
-    /// `swapScale` and fades, the incoming one grows from it. Reduce Motion keeps the fade only.
-    private func show(_ group: PillGroup, animated: Bool) {
+    /// Cross-fades to `content`: the outgoing glyph shrinks to `swapScale` and fades, the
+    /// incoming one grows from it. Reduce Motion keeps the fade only.
+    private func show(_ content: UIView, animated: Bool) {
+        if content === processingContent { processingSpinner.startAnimating() }
+        if content === preparingContent { preparingSpinner.startAnimating() }
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
         let shrunk = CGAffineTransform(scaleX: KeyboardMotion.swapScale, y: KeyboardMotion.swapScale)
         guard animated else {
-            for each in groups {
-                each.alpha = each === group ? 1 : 0
-                each.glyph.transform = .identity
+            for each in contents {
+                each.alpha = each === content ? 1 : 0
+                each.transform = .identity
             }
-            finishSwap()
+            stopHiddenSpinners()
             return
         }
-        // Only a fully faded group starts small; one caught mid-fade continues from where it is.
-        let visibleOpacity = group.layer.presentation()?.opacity ?? Float(group.alpha)
+        // Only a fully faded glyph starts small; one caught mid-fade continues from where it is.
+        let visibleOpacity = content.layer.presentation()?.opacity ?? Float(content.alpha)
         if visibleOpacity < 0.01 {
-            group.glyph.transform = reduceMotion ? .identity : shrunk
+            content.transform = reduceMotion ? .identity : shrunk
         }
         KeyboardMotion.spring({
-            for each in self.groups {
-                let isTarget = each === group
+            for each in self.contents {
+                let isTarget = each === content
                 each.alpha = isTarget ? 1 : 0
-                each.glyph.transform = (isTarget || reduceMotion) ? .identity : shrunk
+                each.transform = (isTarget || reduceMotion) ? .identity : shrunk
             }
-        }, completion: { [weak self] _ in self?.finishSwap() })
+        }, completion: { [weak self] _ in self?.stopHiddenSpinners() })
     }
 
-    private func finishSwap() {
-        if mode != .processing { spinner.stopAnimating() }
+    private func stopHiddenSpinners() {
+        let visible = currentContent
+        if visible !== processingContent { processingSpinner.stopAnimating() }
+        if visible !== preparingContent { preparingSpinner.stopAnimating() }
     }
 
+    /// Interruptible: a new color starts from whatever is on screen, not from the last target.
     private func setFill(_ color: UIColor, animated: Bool) {
+        let onScreen = fill.layer.presentation()?.backgroundColor
         colorAnimator?.stopAnimation(true)
         colorAnimator = nil
         guard animated else {
             fill.backgroundColor = color
             return
         }
+        if let onScreen { fill.layer.backgroundColor = onScreen }
         let animator = KeyboardMotion.colorAnimator { self.fill.backgroundColor = color }
         animator.startAnimation()
         colorAnimator = animator
@@ -291,41 +299,11 @@ final class DictatePill: UIControl {
         if UIAccessibility.isReduceMotionEnabled { transform = .identity }
     }
 
-    // MARK: Elapsed time
-
-    private func startClock() {
-        recordingStartedAt = Date()
-        updateClock()
-        clock?.invalidate()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateClock() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        clock = timer
-    }
-
-    private func stopClock() {
-        clock?.invalidate()
-        clock = nil
-        recordingStartedAt = nil
-    }
-
-    private var elapsedSeconds: Int {
-        guard let recordingStartedAt else { return 0 }
-        return max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
-    }
-
-    private func updateClock() {
-        let seconds = elapsedSeconds
-        let text = String(format: "%d:%02d", seconds / 60, seconds % 60)
-        if timerLabel.text != text { timerLabel.text = text }
-    }
-
     // MARK: Accessibility
 
     private func updateAccessibility() {
         switch mode {
-        case .idle:
+        case .idle, .done:
             accessibilityLabel = "Dictate"
             accessibilityTraits = .button
         case .recording:
@@ -334,18 +312,21 @@ final class DictatePill: UIControl {
         case .processing:
             accessibilityLabel = "Transcribing"
             accessibilityTraits = [.button, .notEnabled]
-        case .done:
-            accessibilityLabel = "Dictate"
-            accessibilityTraits = .button
         }
     }
 
     override var accessibilityValue: String? {
         get {
             switch mode {
-            case .recording: return "Recording, \(elapsedSeconds) seconds"
-            case .done: return "Inserted"
-            default: return nil
+            case .idle:
+                return isPreparing ? "Getting ready" : nil
+            case .recording:
+                let seconds = recordingStartedAt.map { max(0, Int(Date().timeIntervalSince($0))) } ?? 0
+                return "Recording, \(seconds) seconds"
+            case .processing:
+                return processingDetail
+            case .done:
+                return "Inserted"
             }
         }
         set {}
@@ -353,54 +334,42 @@ final class DictatePill: UIControl {
 
     // MARK: Builders
 
-    private static func label(_ text: String, font: UIFont, color: UIColor) -> UILabel {
-        let label = UILabel()
-        label.text = text
-        label.font = font
-        label.textColor = color
-        label.adjustsFontSizeToFitWidth = true
-        label.minimumScaleFactor = 0.8
-        return label
+    /// Centers `view` in the capsule, offset by `nudge` for optical centering. Hidden until shown.
+    private func addContent(_ view: UIView, nudge: CGVector) -> UIView {
+        view.isUserInteractionEnabled = false
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.alpha = 0
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.centerXAnchor.constraint(equalTo: centerXAnchor, constant: nudge.dx),
+            view.centerYAnchor.constraint(equalTo: centerYAnchor, constant: nudge.dy),
+        ])
+        return view
     }
 
-    /// A 22 pt slot with the symbol nudged by `nudge` so it reads centered beside the label.
-    private static func glyph(_ name: String, font: UIFont, color: UIColor, nudge: CGVector) -> UIView {
-        let slot = UIView()
-        slot.translatesAutoresizingMaskIntoConstraints = false
+    private static func glyph(_ name: String, color: UIColor) -> UIImageView {
         let image = UIImageView(image: UIImage(
-            systemName: name, withConfiguration: UIImage.SymbolConfiguration(font: font)
+            systemName: name, withConfiguration: UIImage.SymbolConfiguration(font: glyphFont)
         ))
         image.tintColor = color
         image.contentMode = .center
-        image.translatesAutoresizingMaskIntoConstraints = false
-        slot.addSubview(image)
+        return image
+    }
+
+    /// A fixed square for a (scaled) spinner, so its layout size matches what is drawn.
+    private static func slot(for spinner: UIActivityIndicatorView, side: CGFloat) -> UIView {
+        let slot = UIView()
+        slot.translatesAutoresizingMaskIntoConstraints = false
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        slot.addSubview(spinner)
         NSLayoutConstraint.activate([
-            slot.widthAnchor.constraint(equalToConstant: 22),
-            slot.heightAnchor.constraint(equalToConstant: 22),
-            image.centerXAnchor.constraint(equalTo: slot.centerXAnchor, constant: nudge.dx),
-            image.centerYAnchor.constraint(equalTo: slot.centerYAnchor, constant: nudge.dy),
+            slot.widthAnchor.constraint(equalToConstant: side),
+            slot.heightAnchor.constraint(equalToConstant: side),
+            spinner.centerXAnchor.constraint(equalTo: slot.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
         ])
         return slot
     }
-}
-
-/// One mode's content: a glyph that scales on swaps, then labels or the meter.
-private final class PillGroup: UIStackView {
-    let glyph: UIView
-
-    init(glyph: UIView, rest: [UIView], spacing: CGFloat = 8) {
-        self.glyph = glyph
-        super.init(frame: .zero)
-        axis = .horizontal
-        alignment = .center
-        self.spacing = spacing
-        isUserInteractionEnabled = false
-        translatesAutoresizingMaskIntoConstraints = false
-        addArrangedSubview(glyph)
-        rest.forEach(addArrangedSubview)
-    }
-
-    required init(coder: NSCoder) { fatalError() }
 }
 
 // MARK: - LevelMeterView
@@ -408,11 +377,12 @@ private final class PillGroup: UIStackView {
 /// Five rounded bars. Live: driven by the capture's RMS, smoothed per frame on a display link
 /// that runs only while recording. Without a live level the bars breathe slowly, which says
 /// "listening" without pretending to show speech. Reduce Motion: static bars.
+/// Bars change height (not a y-scale), so their round caps stay round at every level.
 final class LevelMeterView: UIView {
     private static let barCount = 5
-    private static let barWidth: CGFloat = 3.5
-    private static let barHeight: CGFloat = 20
-    private static let barSpacing: CGFloat = 3.5
+    private static let barWidth: CGFloat = 2.5
+    private static let barHeight: CGFloat = 18
+    private static let barSpacing: CGFloat = 2.5
     private static let restScale: CGFloat = 0.2
     /// Center bar tallest, so the meter reads as one shape.
     private static let weights: [CGFloat] = [0.55, 0.8, 1, 0.8, 0.55]
@@ -438,10 +408,10 @@ final class LevelMeterView: UIView {
             let bar = UIView()
             bar.backgroundColor = tintColor
             bar.layer.cornerRadius = Self.barWidth / 2
-            bar.layer.cornerCurve = .continuous
-            bar.frame = CGRect(
-                x: CGFloat(index) * (Self.barWidth + Self.barSpacing), y: 0,
-                width: Self.barWidth, height: Self.barHeight
+            bar.layer.cornerCurve = .circular
+            bar.bounds = CGRect(x: 0, y: 0, width: Self.barWidth, height: Self.barHeight)
+            bar.center = CGPoint(
+                x: CGFloat(index) * (Self.barWidth + Self.barSpacing) + Self.barWidth / 2, y: Self.barHeight / 2
             )
             addSubview(bar)
             bars.append(bar)
@@ -535,7 +505,7 @@ final class LevelMeterView: UIView {
 
     private func setScales(_ scales: [CGFloat]) {
         for (bar, scale) in zip(bars, scales) {
-            bar.transform = CGAffineTransform(scaleX: 1, y: scale)
+            bar.bounds.size.height = max(Self.barWidth, Self.barHeight * scale)
         }
     }
 }

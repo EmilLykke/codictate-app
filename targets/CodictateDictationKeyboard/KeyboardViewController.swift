@@ -18,6 +18,12 @@ enum KbdSuite {
     static let transcriptionLanguageKey = "transcriptionLanguageId"
     static let parakeetModelReadyKey = "parakeetModelReady"
     static let hostMicrophoneGrantedKey = "hostMicrophoneGranted"
+    /// Read to route an In-keyboard transcript through the Formatting AU; the Host and JS
+    /// write them (`FormattingConfiguration`).
+    static let formattingModelKey = "formattingModel"
+    static let formattingStyleKey = "formattingStyle"
+    static let formattingContextKey = "formattingContext"
+    static let s1MiniVerifiedKey = "s1MiniModelVerified"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 
@@ -184,7 +190,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false)
-        NSLog("[Keyboard] In-keyboard path at appear: \(verdict.reason)")
+        AppGroupLog.write("[Keyboard] In-keyboard path at appear: \(verdict.reason)")
         startHaptic.prepare()
         guard verdict.eligible else { return }
         inKeyboard.prepare(in: view)
@@ -204,6 +210,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             inKeyboard.cancel()
             viewState = .idle
         }
+        // S1-mini must not stay loaded for a hidden keyboard.
+        KeyboardFormattingAUClient.shared.disconnect()
     }
 
     override func didReceiveMemoryWarning() {
@@ -378,7 +386,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
     private func startInKeyboardTurnIfEligible() -> Bool {
         let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: true)
-        NSLog("[Keyboard] In-keyboard path at tap: \(verdict.reason)")
+        AppGroupLog.write("[Keyboard] In-keyboard path at tap: \(verdict.reason)")
         guard verdict.eligible, inKeyboard.start(in: view) else { return false }
         stopStartFallback()
         stopResultPolling()
@@ -392,20 +400,39 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private func finishInKeyboardTurn(_ outcome: InKeyboardDictation.Outcome) {
         switch outcome {
         case .text(let text):
-            textDocumentProxy.insertText(text)
+            insertDictation(text)
             localOutcomeOnScreen = true
             viewState = .result(text)
             refreshAutoCapitalization()
         case .noSpeech:
             viewState = .idle
         case .fallBack(let reason):
-            NSLog("[Keyboard] In-keyboard path fell back for this tap: \(reason)")
+            AppGroupLog.write("[Keyboard] In-keyboard path fell back for this tap: \(reason)")
             viewState = .idle
             startHandoff()
         case .failed(let message):
             localOutcomeOnScreen = true
             viewState = .error(message)
         }
+    }
+
+    // MARK: Inserting a transcript
+
+    /// Inserts a Dictation turn's transcript with one space before it when it would otherwise
+    /// run into the text before the cursor ("fedt!How"), as system dictation does. No space
+    /// after it, and none before a transcript that opens with closing punctuation.
+    private func insertDictation(_ text: String) {
+        textDocumentProxy.insertText(Self.spacedForInsertion(
+            text, after: textDocumentProxy.documentContextBeforeInput ?? ""
+        ))
+    }
+
+    static func spacedForInsertion(_ text: String, after context: String) -> String {
+        guard let last = context.last, !last.isWhitespace,
+              let first = text.first, !first.isWhitespace,
+              !",.!?;:)]}'\"\u{2019}\u{201D}%\u{2026}".contains(first)
+        else { return text }
+        return " " + text
     }
 
     // MARK: Handoff
@@ -447,7 +474,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         let warmExpiry = suite.double(forKey: KbdSuite.warmSessionExpiryKey)
         let isHostWarm = warmActive && warmExpiry > now
 
-        NSLog("[Keyboard] startHandoff warm=\(isHostWarm) expiry=\(warmExpiry)")
+        AppGroupLog.write("[Keyboard] startHandoff warm=\(isHostWarm) expiry=\(warmExpiry)")
 
         if isHostWarm {
             // Wake host via Darwin (does not open app). Listen poll picks up phase=start.
@@ -455,7 +482,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             return
         }
 
-        NSLog("[Keyboard] Cold start — opening Codictate once")
+        AppGroupLog.write("[Keyboard] Cold start — opening Codictate once")
         guard let url = URL(string: "codictateapp://keyboard-record") else { return }
         openApp(url)
         startFallback(for: suite)
@@ -648,7 +675,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
                 stopResultPolling()
                 if let text = suite.string(forKey: KbdSuite.transcriptKey) {
                     if !text.isEmpty {
-                        textDocumentProxy.insertText(text)
+                        insertDictation(text)
                         viewState = .result(text)
                         refreshAutoCapitalization()
                     } else {
