@@ -79,6 +79,12 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private let selectionHaptic = UISelectionFeedbackGenerator()
     /// The window whose system gesture recognizers last had their touch delays turned off.
     private weak var gestureDelayWindow: UIWindow?
+    /// System gesture recognizers whose `cancelsTouchesInView` the open model panel turned
+    /// off; each goes back to true when it closes.
+    private var suspendedTouchCancellation: [UIGestureRecognizer] = []
+    /// The system gesture recognizers are listed in the log once per appearance.
+    private var loggedRecognizersAtAppear = false
+    private var loggedRecognizersForPanel = false
 
     private var viewState: DictationViewState = .idle {
         didSet {
@@ -134,6 +140,10 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             keyboardView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         if let inputView { inputView.allowsSelfSizing = true }
+        keyboardView.modelPanelDiagnostics = PanelTouchDiagnostics(
+            write: { AppGroupLog.write($0) },
+            systemRecognizers: { [weak self] in self?.systemGestureRecognizers() ?? [] }
+        )
         keyboardView.inputModeKey.addTarget(
             self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents
         )
@@ -163,8 +173,41 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         // viewDidAppear.
         if let window = view.window, window !== gestureDelayWindow {
             releaseSystemGestureDelays()
+            if keyboardView.isModelPanelOpen { suspendSystemTouchCancellation() }
         }
     }
+
+    /// The gesture recognizers iOS puts on the keyboard's window and the views above ours.
+    /// The keyboard adds none of its own there.
+    private func systemGestureRecognizers() -> [UIGestureRecognizer] {
+        guard let window = view.window else { return [] }
+        var recognizers = window.gestureRecognizers ?? []
+        var ancestor = view.superview
+        while let current = ancestor, current !== window {
+            recognizers += current.gestureRecognizers ?? []
+            ancestor = current.superview
+        }
+        return recognizers
+    }
+
+    /// One line per system gesture recognizer: its class, the view it is on, and the flags
+    /// that decide whether it can hold back or cancel the keyboard's touches.
+    private func logSystemGestureRecognizers(_ moment: String) {
+        let recognizers = systemGestureRecognizers()
+        AppGroupLog.write("[Keyboard][Touch] \(recognizers.count) system gesture recognizers \(moment)")
+        for (index, recognizer) in recognizers.enumerated() {
+            let host = recognizer.view.map { String(describing: type(of: $0)) } ?? "nil"
+            AppGroupLog.write(
+                "[Keyboard][Touch]  \(index + 1). \(String(describing: type(of: recognizer))) on \(host)"
+                    + " cancels=\(Self.flag(recognizer.cancelsTouchesInView))"
+                    + " delaysBegan=\(Self.flag(recognizer.delaysTouchesBegan))"
+                    + " delaysEnded=\(Self.flag(recognizer.delaysTouchesEnded))"
+                    + " enabled=\(Self.flag(recognizer.isEnabled))"
+            )
+        }
+    }
+
+    private static func flag(_ value: Bool) -> String { value ? "1" : "0" }
 
     /// iOS holds back touchesBegan near the screen's edges while its edge gestures (on the
     /// keyboard's window and the views above ours) decide whether the touch is theirs, so a
@@ -174,12 +217,13 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private func releaseSystemGestureDelays() {
         guard let window = view.window else { return }
         gestureDelayWindow = window
-        var recognizers = window.gestureRecognizers ?? []
-        var ancestor = view.superview
-        while let current = ancestor, current !== window {
-            recognizers += current.gestureRecognizers ?? []
-            ancestor = current.superview
+        let recognizers = systemGestureRecognizers()
+        let logsList = !loggedRecognizersAtAppear
+        if logsList {
+            loggedRecognizersAtAppear = true
+            logSystemGestureRecognizers("at appear, before changes")
         }
+        defer { if logsList { logSystemGestureRecognizers("at appear, after releasing delays") } }
         var changed = 0
         for recognizer in recognizers where recognizer.delaysTouchesBegan || recognizer.delaysTouchesEnded {
             recognizer.delaysTouchesBegan = false
@@ -190,6 +234,38 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         AppGroupLog.write(
             "[Keyboard] Touch delays off on \(changed) of \(recognizers.count) system gesture recognizers"
         )
+    }
+
+    /// While the model panel is open, no system gesture recognizer may cancel its touches:
+    /// a pan or long-press that recognizes as a finger shifts a point would otherwise take
+    /// the tap from the tile under it. The recognizers still recognize. Typing keeps the
+    /// system's behavior: this runs only while the panel is open.
+    private func suspendSystemTouchCancellation() {
+        restoreSystemTouchCancellation(logging: false)
+        let recognizers = systemGestureRecognizers()
+        for recognizer in recognizers where recognizer.cancelsTouchesInView {
+            suspendedTouchCancellation.append(recognizer)
+            recognizer.cancelsTouchesInView = false
+        }
+        AppGroupLog.write(
+            "[Keyboard][Touch] Panel open: cancelsTouchesInView off on \(suspendedTouchCancellation.count)"
+                + " of \(recognizers.count) system gesture recognizers"
+        )
+        if !loggedRecognizersForPanel {
+            loggedRecognizersForPanel = true
+            logSystemGestureRecognizers("with the panel open")
+        }
+    }
+
+    private func restoreSystemTouchCancellation(logging: Bool = true) {
+        guard !suspendedTouchCancellation.isEmpty else { return }
+        for recognizer in suspendedTouchCancellation { recognizer.cancelsTouchesInView = true }
+        if logging {
+            AppGroupLog.write(
+                "[Keyboard][Touch] Panel closed: cancelsTouchesInView restored on \(suspendedTouchCancellation.count)"
+            )
+        }
+        suspendedTouchCancellation = []
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -253,6 +329,9 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         stopPhasePolling()
         stopResultPolling()
         keyboardView.closeModelPanel(animated: false)
+        restoreSystemTouchCancellation()
+        loggedRecognizersAtAppear = false
+        loggedRecognizersForPanel = false
         preparingRevealTimer?.invalidate()
         preparingRevealTimer = nil
         // The microphone must never outlive the keyboard; a turn cut short is discarded.
@@ -415,6 +494,14 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         inKeyboard.prepare(in: view)
         if variant != .parakeet {
             KeyboardDictationAUClient.shared.prewarm(variant: variant.rawValue)
+        }
+    }
+
+    func speechModelPanelDidChange(isOpen: Bool) {
+        if isOpen {
+            suspendSystemTouchCancellation()
+        } else {
+            restoreSystemTouchCancellation()
         }
     }
 

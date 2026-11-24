@@ -28,6 +28,9 @@ protocol DictationKeyboardViewDelegate: AnyObject {
     func didSelectSpeechModel(_ id: String)
     /// S1-mini's switch in the model panel.
     func didToggleFormatting(_ isOn: Bool)
+    /// The model panel starts opening or closing; the controller keeps the system's gesture
+    /// recognizers from cancelling its touches while it is open.
+    func speechModelPanelDidChange(isOpen: Bool)
 }
 
 // MARK: - KeyboardKey
@@ -517,11 +520,16 @@ final class DictationKeyboardView: UIView {
         setModelPanelOpen(false, animated: animated)
     }
 
+    /// Where the model panel logs its touches.
+    var modelPanelDiagnostics: PanelTouchDiagnostics? {
+        get { modelPanel.diagnostics }
+        set { modelPanel.diagnostics = newValue }
+    }
+
     private func openModelPanel() {
         guard let content = delegate?.speechModelPanelContent() else { return }
         modelPanel.setContent(content)
         setModelPanelOpen(true, animated: true)
-        modelPanel.scrollToCurrent()
     }
 
     /// Cross-fades the panel and the keys. Interruptible: a new direction starts from what is
@@ -529,6 +537,7 @@ final class DictationKeyboardView: UIView {
     private func setModelPanelOpen(_ open: Bool, animated: Bool) {
         guard open != isModelPanelOpen else { return }
         isModelPanelOpen = open
+        delegate?.speechModelPanelDidChange(isOpen: open)
         modelChip.setOpen(open, animated: animated)
         dismissKey.accessibilityLabel = open ? "Close speech models" : "Hide keyboard"
         stopDeleteRepeat()

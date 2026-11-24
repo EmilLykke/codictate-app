@@ -70,12 +70,15 @@ On the Codictate keyboard extension, the Dictate button is a small capsule (`Dic
 The keyboard's way to change the Speech Model without opening Codictate. A quiet chip right
 of the dismiss glyph names the current Speech Model (its short name: "Parakeet", "Whisper
 base", "hviske") with a small up-down chevron; it dims while a Dictation turn runs. Tapping
-it swaps the keys for the panel at the same height: one row per installed Speech Model,
-dimmed with the reason ("Not for Danish") when its Language Lock rejects the stored
-Transcription Language, then S1-mini's switch when S1-mini is downloaded. Picking a row
-writes `preferredModelVariant` exactly as the app does and loads the new Speech Model for
-the next tap; the switch writes `formattingModel`. The app and a running Host pick up both
-changes (see AGENTS.md, Settings with two writers).
+it swaps the keys for the panel at the same height. The panel never scrolls: the installed
+Speech Models are key-like tiles, two to a row (name over its languages; the current one
+tinted with a checkmark), each dimmed with the reason ("Not for Danish") when its Language
+Lock rejects the stored Transcription Language. Below them, past a hairline, comes S1-mini's
+row with its switch when S1-mini is downloaded; a tap anywhere on the row flips it. Tiles
+shrink a little rather than scroll when they would not fit. Picking a tile writes
+`preferredModelVariant` exactly as the app does and loads the new Speech Model for the next
+tap; the switch writes `formattingModel`. The app and a running Host pick up both changes
+(see AGENTS.md, Settings with two writers).
 _Avoid_: model picker, model menu.
 
 ## First-time Parakeet processing
