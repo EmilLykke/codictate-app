@@ -17,6 +17,12 @@ NS_SWIFT_SENDABLE
 /// The path of the loaded GGUF, or nil.
 @property (nonatomic, readonly, copy, nullable) NSString *loadedModelPath;
 
+/// YES (default, the Host's setting): a load lets parakeet.cpp pick its first GPU (Metal).
+/// NO: the next load runs on the CPU (`PARAKEET_DEVICE=cpu`), and a model loaded on the GPU
+/// is loaded again. Never Metal under the simulator. The Dictation AU turns it off after a
+/// Metal fault.
+@property (atomic) BOOL usesGPU;
+
 /// Loads the GGUF at `path` and holds it.  A no-op when that file is already loaded; a
 /// different file replaces the loaded one.  The error carries `parakeet_capi_load_error`.
 - (BOOL)loadModelAtPath:(NSString *)path error:(NSError **)error;

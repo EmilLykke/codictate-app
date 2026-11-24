@@ -1,10 +1,10 @@
 import Foundation
 import NaturalLanguage
 
-// S1-mini formatting shared by the Host (`FormattingManager`) and the Formatting AU
+// S1-mini formatting shared by the Host (`FormattingManager`) and the Dictation AU
 // (`CodictateFormattingAU`), which compiles this file and `S1MiniBridge` too, so a keyboard
 // dictation is cleaned exactly as a Host dictation is. Nothing here may use the Host's own
-// types (`ModelManager`, `KeyboardDictationBridge`, UIKit).
+// types (`ModelManager`, `KeyboardDictationBridge`, UIKit); `SpeechModelCatalog` is shared.
 
 enum FormattingModel: String {
     case off
@@ -34,8 +34,7 @@ enum FormattingConfiguration {
     static let sha256 = "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"
     static let url = URL(string: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf")!
     static let appGroupID = "group.app.codictate"
-    /// `ModelManager.Variant.automaticLanguageId`, repeated because the AU cannot see it.
-    static let automaticLanguageId = "auto"
+    static let automaticLanguageId = SpeechModelCatalog.Variant.automaticLanguageId
 
     static var modelPath: String? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?

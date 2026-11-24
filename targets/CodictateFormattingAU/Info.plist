@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Codictate Formatting</string>
+	<string>Codictate Dictation</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -28,11 +28,11 @@
 			<array>
 				<dict>
 					<key>description</key>
-					<string>Codictate Formatting</string>
+					<string>Codictate Dictation</string>
 					<key>manufacturer</key>
 					<string>Cdct</string>
 					<key>name</key>
-					<string>Codictate: Formatting</string>
+					<string>Codictate: Dictation</string>
 					<key>sandboxSafe</key>
 					<true/>
 					<key>subtype</key>
@@ -51,7 +51,7 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.AudioUnit-UI</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).FormattingAUViewController</string>
+		<string>$(PRODUCT_MODULE_NAME).DictationAUViewController</string>
 	</dict>
 </dict>
 </plist>

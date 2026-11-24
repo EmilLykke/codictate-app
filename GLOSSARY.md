@@ -14,20 +14,42 @@ Keyboard writes `phase=start` to the App Group and posts a Darwin notification. 
 
 ## In-keyboard path
 
-The keyboard records and transcribes a Dictation turn itself, without opening the Host, even when the app is closed. It captures with `getUserMedia` in a hidden `WKWebView` (WebKit records in its own process, so the keyboard's microphone restriction does not apply) and transcribes with Parakeet on the Neural Engine through FluidAudio, loading the Host's models from the App Group. It writes no phase to the App Group. Eligible only with Full Access, Parakeet as the Speech Model and ready, automatic Transcription Language, microphone granted, a Neural Engine and 5 GiB of memory, room in the keyboard's memory limit, no Host warm session, and an idle shared phase; otherwise the keyboard uses the Warm or Cold path. S1-mini does not block it: S1-mini cannot run in the keyboard, so a warm Host records and formats as before, and without one the keyboard has the Formatting AU format Parakeet's text. A capture that fails to start hands that tap to the Cold path; a failed load or transcription sets the path aside for the keyboard process.
+The keyboard records and transcribes a Dictation turn without opening the Host, even when
+the app is closed, with any Speech Model. It captures with `getUserMedia` in a hidden
+`WKWebView` (WebKit records in its own process, so the keyboard's microphone restriction
+does not apply) into a WAV in the App Group's `KeyboardRecordings/`. Parakeet then
+transcribes inside the keyboard, on the Neural Engine through FluidAudio, loading the
+Host's models from the App Group; every other Speech Model runs in the Dictation AU, which
+reads the WAV and answers with the finished text. It writes no phase to the App Group.
+Eligible only with Full Access, the Speech Model's files in the App Group, a Transcription
+Language its Language Lock accepts, the Host's published Dictation Readiness not blocked,
+microphone granted, no Host warm session, and an idle shared phase; for Parakeet also a
+Neural Engine, 5 GiB of memory and room in the keyboard's memory limit. Otherwise the
+keyboard uses the Warm or Cold path. S1-mini does not block it: a warm Host records and
+formats as before, and without one the Dictation AU formats the text. A capture that fails
+to start hands that tap to the Cold path; a failed load or transcription shows
+"Transcription failed" and sets the path aside for that Speech Model in the keyboard
+process, so the next tap goes to the Host.
 _Avoid_: local dictation, keyboard ASR.
 
-## Formatting AU
+## Dictation AU
 
-The `CodictateFormattingAU` extension: an Audio Unit with no interface and no audio work
-that the keyboard hosts out of process, so an In-keyboard Dictation turn gets S1-mini
+The `CodictateFormattingAU` extension (it kept the target name and bundle id it had as the
+Formatting AU): an Audio Unit with no interface and no audio work that the keyboard hosts
+out of process, so an In-keyboard Dictation turn gets every Speech Model and S1-mini
 without the Host. It is the UI kind of Audio Unit extension (`com.apple.AudioUnit-UI`)
 because iOS gives that kind no hard memory ceiling, unlike the keyboard. It runs the Host's
-own S1-mini code (`S1MiniFormatter`, `S1MiniBridge`) on the App Group's model, loads it
-when an In-keyboard turn starts and frees it when the keyboard goes away. Like the Host's
-cleanup it never fails a Dictation turn: on any fault or after its timeout the keyboard
-inserts Parakeet's text. Internal vocabulary; it never appears in user-facing copy.
-_Avoid_: plugin, effect, formatting extension.
+own code on the App Group's files (`TranscriptionPipeline` with `WhisperEngine`,
+`CohereEngine`, `EkkoEngine`, `PunctuationRestorer`, `S1MiniFormatter`), so a turn is
+decoded and formatted exactly as in the Host: for Parakeet turns it only formats the
+keyboard's text, for every other Speech Model it transcribes, restores punctuation for ekko
+and formats, in one request. It loads the Speech Model and S1-mini when an In-keyboard turn
+starts, holds one Speech Model at a time, and frees everything when the keyboard goes away
+or memory runs short. It asks for Metal as the Host does and drops to the CPU for the rest
+of its process if Metal fails. Formatting never fails a Dictation turn: on any fault or
+after its timeout the keyboard inserts the unformatted text. Internal vocabulary; it never
+appears in user-facing copy.
+_Avoid_: plugin, effect, Formatting AU (its former name).
 
 ## Keyboard warm session / listen session
 
@@ -102,8 +124,8 @@ punctuation.
 Adding punctuation and capital letters to a Raw Transcript, never removing a capital and
 never changing, adding or removing any word. Danish only. On iOS it is always applied to
 `ekko`, whose Raw Transcript has neither, and to no other Speech Model (iOS has no Add
-punctuation switch for hviske). It runs in the Host on the Raw Transcript before S1-mini
-formatting. It never fails a Dictation turn: on any fault the words are delivered as the
+punctuation switch for hviske). It runs in the Host (or, for an In-keyboard turn, the
+Dictation AU) on the Raw Transcript before S1-mini formatting. It never fails a Dictation turn: on any fault the words are delivered as the
 Speech Model wrote them, with no error. Not a Formatting Model: it does not rewrite.
 
 ## Punctuation Model
@@ -119,5 +141,7 @@ Whether the current (Speech Model, Transcription Language, permissions) combinat
 start a Dictation turn right now. Computed in the Host, never in React Native, because
 keyboard and Action Button dictation run with no JS process alive. Either runnable, or
 blocked with exactly one reason from a closed set; there is no third state and no
-substitution of a different Speech Model.
+substitution of a different Speech Model. The Host publishes it to the App Group; the
+keyboard reads that before an In-keyboard turn, and the Dictation AU checks the same rule
+(`DictationReadinessState.resolve`) before it runs a Speech Model.
 _Avoid_: fallback, degraded mode.

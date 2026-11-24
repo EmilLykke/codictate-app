@@ -139,14 +139,15 @@ const config: ExpoConfig = {
 // withOnnxRuntime (ekko and ekko-pnc) sit inside it for the same reason.
 // withFluidAudio sits inside withKeyboardExtension too, so it runs after the
 // keyboard extension target exists and can link FluidAudio to it.
-// withFormattingAU sits inside withLlama: it links the llama.xcframework reference
-// withLlama adds (were it first, withLlama would find the reference and skip
-// embedding llama in the app), and it needs the keyboard target and the app's
-// S1-mini sources that withKeyboardExtension adds.
+// withFormattingAU (the Dictation AU) is innermost, so it runs last: it links the
+// crispasr, llama, parakeet and onnxruntime references the other plugins add (were it
+// first, they would find a reference and skip embedding their framework in the app),
+// and it needs the keyboard target and the app's shared sources that
+// withKeyboardExtension adds.
 export default withKeyboardExtension(
   withFluidAudio(
     withCrispASR(
-      withLlama(withFormattingAU(withParakeetCpp(withOnnxRuntime(config)))),
+      withLlama(withParakeetCpp(withOnnxRuntime(withFormattingAU(config)))),
     ),
   ),
 );

@@ -3,14 +3,17 @@ import Foundation
 import UIKit
 
 /// The In-keyboard path: one Dictation turn recorded (`KeyboardWebCapture`) and transcribed
-/// (`KeyboardParakeet`) inside the keyboard, so the user never leaves the app they type in,
-/// even with Codictate closed. Local to the keyboard: it writes no phase to the App Group,
-/// so the Host never records the same words.
+/// without the Host, so the user never leaves the app they type in, even with Codictate
+/// closed. Parakeet transcribes inside the keyboard (`KeyboardParakeet`); every other Speech
+/// Model runs in the Dictation AU (`KeyboardDictationAUClient`), which reads the recording
+/// from the App Group. Local to the keyboard: it writes no phase to the App Group, so the
+/// Host never records the same words.
 ///
 /// Used only when `eligibility` says so; otherwise the keyboard keeps the Warm or Cold path.
 /// A capture that never gets going (getUserMedia refused, WebKit's process gone, no audio,
 /// under half a second when it ends by itself) hands the tap back to that path with
-/// `.fallBack`, so a dictation is never lost silently.
+/// `.fallBack`, so a dictation is never lost silently. A failed transcription shows its
+/// error and sets the path aside for that Speech Model in this keyboard process.
 @MainActor
 final class InKeyboardDictation {
     enum Outcome {
@@ -35,6 +38,8 @@ final class InKeyboardDictation {
     }
 
     private var phase: Phase = .idle
+    /// The Speech Model of the turn in progress, read at its tap.
+    private var variant: SpeechModelCatalog.Variant = .parakeet
     private var capture: KeyboardWebCapture?
     private var file: KeyboardPCMFile?
     private var userStopped = false
@@ -60,6 +65,15 @@ final class InKeyboardDictation {
     var isActive: Bool { phase != .idle }
     /// Capturing and not yet stopped: a tap now stops the turn.
     var isRecording: Bool { phase == .recording }
+    /// The processing state's message right after the stop: Parakeet's first-use line while
+    /// it is still compiling, nothing otherwise.
+    var processingMessageAtStop: String? {
+        variant == .parakeet && !KeyboardParakeet.shared.isLoaded ? Self.firstUseMessage : nil
+    }
+
+    /// Speech Models whose transcription failed in the Dictation AU in this keyboard process:
+    /// their next taps use the Warm or Cold path. Parakeet's is `KeyboardParakeet.isSetAside`.
+    private static var setAsideVariants: Set<SpeechModelCatalog.Variant> = []
 
     /// Back to idle; the model may go on a memory warning again.
     private func endTurn() {
@@ -69,33 +83,57 @@ final class InKeyboardDictation {
 
     // MARK: - Eligibility
 
+    /// The Speech Model selected in the App Group: the Host's default `base` when unset
+    /// (`TranscriptionRouter`, `DictationReadiness`), nil when the id is unknown.
+    static func selectedVariant(suite: UserDefaults?) -> SpeechModelCatalog.Variant? {
+        SpeechModelCatalog.Variant(rawValue: suite?.string(forKey: KbdSuite.preferredVariantKey) ?? "base")
+    }
+
     /// Whether this tap may use the In-keyboard path, with the reason when it may not.
     /// `forTap` adds the checks that change from moment to moment (a Host already
     /// recording or listening, the model and memory right now); without it, the answer
     /// decides whether to preload the page and the model when the keyboard appears.
     static func eligibility(hasFullAccess: Bool, suite: UserDefaults?, forTap: Bool) -> (eligible: Bool, reason: String) {
         guard hasFullAccess else { return (false, "no Full Access") }
-        guard let suite, KeyboardParakeet.modelDirectory != nil else { return (false, "no App Group") }
+        guard let suite, SpeechModelCatalog.containerURL != nil else { return (false, "no App Group") }
         suite.synchronize()
-        if KeyboardParakeet.shared.isSetAside { return (false, "set aside in this process") }
-        // The Host's own default when the key is unset (`TranscriptionRouter`, `DictationReadiness`).
-        let variant = suite.string(forKey: KbdSuite.preferredVariantKey) ?? "base"
-        guard variant == "parakeet" else { return (false, "Speech Model is \(variant)") }
-        // Parakeet's Language Lock accepts only automatic; any other language is the Host's
-        // `languageUnsupportedByModel`, which the Host path reports.
-        let language = suite.string(forKey: KbdSuite.transcriptionLanguageKey) ?? "auto"
-        guard language == "auto" else { return (false, "Transcription Language is \(language)") }
-        guard KeyboardParakeet.modelIsReady(suite: suite) else { return (false, "Parakeet not ready in the App Group") }
+        guard let variant = selectedVariant(suite: suite) else {
+            return (false, "unknown Speech Model \(suite.string(forKey: KbdSuite.preferredVariantKey) ?? "")")
+        }
+        if variant == .parakeet ? KeyboardParakeet.shared.isSetAside : setAsideVariants.contains(variant) {
+            return (false, "set aside for \(variant.rawValue) in this process")
+        }
+        // The Language Lock, as the Host checks it: an explicitly picked language the Speech
+        // Model cannot run is the Host's `languageUnsupportedByModel`, which its path reports.
+        let language = suite.string(forKey: KbdSuite.transcriptionLanguageKey) ?? SpeechModelCatalog.Variant.automaticLanguageId
+        guard variant.accepts(languageId: language) else {
+            return (false, "Transcription Language \(language) is outside \(variant.rawValue)'s Language Lock")
+        }
+        // Dictation Readiness as the Host last published it; a blocked state is the Host's to report.
+        if let blocked = publishedReadinessBlock(suite: suite) {
+            return (false, "Dictation Readiness blocked: \(blocked)")
+        }
+        if variant == .parakeet {
+            guard KeyboardParakeet.modelIsReady(suite: suite) else { return (false, "Parakeet not ready in the App Group") }
+        } else {
+            // What `ModelManager.modelIsReady` reads in the Host: the weights, and for ekko the
+            // Punctuation Model too.
+            guard SpeechModelCatalog.filesAreInstalled(for: variant) else {
+                return (false, "\(variant.rawValue) files not in the App Group")
+            }
+        }
         // This process keeps the permission it read when it started, so the Host's own
         // reading counts too (`DictationReadiness`). WebKit still checks when it opens the mic.
         guard AVAudioApplication.shared.recordPermission == .granted
                 || suite.bool(forKey: KbdSuite.hostMicrophoneGrantedKey)
         else { return (false, "microphone not granted") }
-        guard KeyboardParakeet.deviceFits else { return (false, "no Neural Engine or under 5 GiB") }
+        if variant == .parakeet {
+            guard KeyboardParakeet.deviceFits else { return (false, "no Neural Engine or under 5 GiB") }
+        }
         // S1-mini does not block: it cannot run in the keyboard, so a warm Host (checked
-        // below) formats as before, and without one the Formatting AU formats Parakeet's
-        // text out of process (`KeyboardFormattingAUClient`).
-        guard forTap else { return (true, "eligible") }
+        // below) formats as before, and without one the Dictation AU formats the text out of
+        // process (`KeyboardDictationAUClient`).
+        guard forTap else { return (true, "eligible (\(variant.rawValue))") }
 
         // A listening Host already records and formats without a switch; two microphone
         // owners would fight.
@@ -108,6 +146,9 @@ final class InKeyboardDictation {
         guard [KbdSuite.phaseIdle, KbdSuite.phaseReady, KbdSuite.phaseFailed].contains(shared) else {
             return (false, "shared phase is \(shared)")
         }
+        // The other Speech Models run in the Dictation AU's process, not under the keyboard's
+        // memory limit; the keyboard only writes the recording to disk.
+        guard variant == .parakeet else { return (true, "eligible (\(variant.rawValue) in the Dictation AU)") }
         let parakeet = KeyboardParakeet.shared
         if let blocked = parakeet.loadBlockedReason() { return (false, blocked) }
         let memory = KeyboardParakeet.memory()
@@ -116,26 +157,43 @@ final class InKeyboardDictation {
         ) else {
             return (false, "short of memory for a \(Int(KeyboardParakeetBudget.longestAudio)) s turn \(memory)")
         }
-        return (true, "eligible")
+        return (true, "eligible (parakeet in the keyboard)")
+    }
+
+    /// The blocked reason in the Host's published `dictationReadiness` JSON, or nil when it
+    /// is runnable or was never published. The Host re-resolves it whenever the Speech Model
+    /// or the Transcription Language changes.
+    private static func publishedReadinessBlock(suite: UserDefaults) -> String? {
+        guard let data = suite.data(forKey: KbdSuite.dictationReadinessKey),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["blocked"] as? Bool == true
+        else { return nil }
+        return object["reason"] as? String ?? "blocked"
     }
 
     // MARK: - Lifecycle
 
-    /// Loads the capture page (no microphone) and starts loading Parakeet, off the tap's path.
+    /// Loads the capture page (no microphone) and, for Parakeet, starts loading it, off the
+    /// tap's path. The Dictation AU's models load when a turn starts.
     func prepare(in host: UIView) {
         if capture == nil { makeCapture(in: host) }
-        KeyboardParakeet.shared.warmUp()
+        if Self.selectedVariant(suite: Self.suite) == .parakeet {
+            KeyboardParakeet.shared.warmUp()
+        }
         removeLeftoverRecordings()
     }
 
     /// Starts a turn. False when it cannot start, and the tap should use the existing path.
     func start(in host: UIView) -> Bool {
-        guard phase == .idle else { return false }
-        guard KeyboardParakeet.shared.warmUp() else { return false }
+        guard phase == .idle, let variant = Self.selectedVariant(suite: Self.suite) else { return false }
+        if variant == .parakeet {
+            guard KeyboardParakeet.shared.warmUp() else { return false }
+        }
         if capture == nil { makeCapture(in: host) }
+        self.variant = variant
         generation += 1
         phase = .recording
-        KeyboardParakeet.shared.isHeldForTurn = true
+        KeyboardParakeet.shared.isHeldForTurn = variant == .parakeet
         userStopped = false
         file = nil
         otherAudioAtStart = AVAudioSession.sharedInstance().isOtherAudioPlaying
@@ -148,10 +206,13 @@ final class InKeyboardDictation {
             guard let self, self.phase == .recording, (self.file?.frames ?? 0) == 0 else { return }
             self.abandonCapture(fallBack: "no audio \(Self.firstAudioDeadline) s after the tap")
         }
-        AppGroupLog.write("[Keyboard] In-keyboard turn started \(KeyboardParakeet.memory())")
-        // S1-mini loads in the Formatting AU's process while the user speaks.
-        if KeyboardFormattingAUClient.isWanted(suite: Self.suite) {
-            KeyboardFormattingAUClient.shared.prewarm()
+        AppGroupLog.write("[Keyboard] In-keyboard turn started with \(variant.rawValue) \(KeyboardParakeet.memory())")
+        // The Speech Model (other than Parakeet) and S1-mini load in the Dictation AU's
+        // process while the user speaks.
+        if variant != .parakeet {
+            KeyboardDictationAUClient.shared.prewarm(variant: variant.rawValue)
+        } else if KeyboardDictationAUClient.isWanted(suite: Self.suite) {
+            KeyboardDictationAUClient.shared.prewarm()
         }
         return true
     }
@@ -177,7 +238,7 @@ final class InKeyboardDictation {
         AppGroupLog.write("[Keyboard] In-keyboard turn discarded (keyboard hidden)")
         generation += 1
         let wasCapturing = phase == .recording || phase == .stopping
-        if phase == .transcribing { KeyboardFormattingAUClient.shared.cancel() }
+        if phase == .transcribing { KeyboardDictationAUClient.shared.cancel() }
         endTurn()
         invalidateTimers()
         if wasCapturing { capture?.stop() }
@@ -261,6 +322,10 @@ final class InKeyboardDictation {
             return
         }
         phase = .transcribing
+        guard variant == .parakeet else {
+            transcribeInDictationAU(file.url, seconds: seconds)
+            return
+        }
         let parakeet = KeyboardParakeet.shared
         // A load still running at the stop is compiling the model: warm loads take 0.3 s.
         onProcessing?(parakeet.isLoaded ? nil : Self.firstUseMessage)
@@ -278,7 +343,7 @@ final class InKeyboardDictation {
             }
             try? FileManager.default.removeItem(at: url)
             guard let self, self.generation == turn else { return }
-            if case .text(let text) = outcome, KeyboardFormattingAUClient.isWanted(suite: Self.suite) {
+            if case .text(let text) = outcome, KeyboardDictationAUClient.isWanted(suite: Self.suite) {
                 self.onProcessing?(Self.formattingMessage)
                 outcome = await Self.format(text)
                 guard self.generation == turn else { return }
@@ -289,23 +354,77 @@ final class InKeyboardDictation {
         }
     }
 
+    /// Every Speech Model but Parakeet: one request to the Dictation AU, which transcribes
+    /// the recording as the Host would and formats it with S1-mini when eligible. There is no
+    /// model in the keyboard to fall back on, so a failure is shown and sets the path aside
+    /// for this Speech Model, and the next tap goes to the Host.
+    private func transcribeInDictationAU(_ url: URL, seconds: Double) {
+        onProcessing?(nil)
+        let turn = generation
+        let variant = variant
+        let languageId = Self.suite?.string(forKey: KbdSuite.transcriptionLanguageKey)
+            ?? SpeechModelCatalog.Variant.automaticLanguageId
+        guard let container = SpeechModelCatalog.containerURL,
+              url.path.hasPrefix(container.path + "/") else {
+            finishAUTurn(.failed("Transcription failed: no App Group"), url: url, turn: turn)
+            return
+        }
+        let relativePath = String(url.path.dropFirst(container.path.count + 1))
+        KeyboardDictationAUClient.shared.transcribe(
+            wavPath: relativePath,
+            variant: variant.rawValue,
+            languageId: languageId,
+            audioSeconds: seconds
+        ) { [weak self] result in
+            // A turn discarded meanwhile (keyboard hidden) ends in `cancelled`, which says
+            // nothing about the Speech Model.
+            guard let self, self.generation == turn else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+            switch result {
+            case .text(let text):
+                // The Host treats an empty transcript as no speech.
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.finishAUTurn(trimmed.isEmpty ? .noSpeech : .text(text), url: url, turn: turn)
+            case .failed(let reason):
+                Self.setAside(variant, "Dictation AU: \(reason)")
+                self.finishAUTurn(.failed("Transcription failed"), url: url, turn: turn)
+            }
+        }
+    }
+
+    private func finishAUTurn(_ outcome: Outcome, url: URL, turn: Int) {
+        try? FileManager.default.removeItem(at: url)
+        guard generation == turn else { return }
+        file = nil
+        endTurn()
+        onFinish?(outcome)
+    }
+
+    /// The In-keyboard path is off for `variant` for the rest of this keyboard process.
+    private static func setAside(_ variant: SpeechModelCatalog.Variant, _ reason: String) {
+        setAsideVariants.insert(variant)
+        AppGroupLog.write("[Keyboard] In-keyboard path set aside for \(variant.rawValue): \(reason)")
+    }
+
     // MARK: - Formatting
 
     private static var suite: UserDefaults? { UserDefaults(suiteName: KbdSuite.suiteName) }
 
-    /// S1-mini in the Formatting AU, as the Host's `formatIfEligible` would run it. Never
+    /// S1-mini in the Dictation AU, as the Host's `formatIfEligible` would run it. Never
     /// fails the turn: any fault or the timeout gives back Parakeet's text, and a successful
     /// empty cleanup is no speech, as on the Host.
     private static func format(_ text: String) async -> Outcome {
         let suite = suite
         let result = await withCheckedContinuation { continuation in
-            KeyboardFormattingAUClient.shared.format(
+            KeyboardDictationAUClient.shared.format(
                 text,
-                // Eligibility pins the In-keyboard path to the automatic Transcription Language.
+                // Eligibility pins Parakeet to the automatic Transcription Language.
                 languageId: suite?.string(forKey: KbdSuite.transcriptionLanguageKey) ?? "auto",
                 style: suite?.string(forKey: KbdSuite.formattingStyleKey),
                 context: suite?.string(forKey: KbdSuite.formattingContextKey),
-                timeout: KeyboardFormattingAUClient.timeout(for: text)
+                timeout: KeyboardDictationAUClient.timeout(for: text)
             ) { continuation.resume(returning: $0) }
         }
         switch result {

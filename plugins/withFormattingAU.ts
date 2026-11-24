@@ -3,24 +3,32 @@
 /**
  * Expo config plugin: withFormattingAU
  *
- * Adds the CodictateFormattingAU extension: an Audio Unit (`com.apple.AudioUnit-UI`, one
- * `aufx` component, no interface) that the keyboard hosts out of process to run S1-mini on
- * an In-keyboard transcript, since S1-mini cannot fit the keyboard's memory limit.
+ * Adds the CodictateFormattingAU extension, the Dictation AU: an Audio Unit
+ * (`com.apple.AudioUnit-UI`, one `aufx` component, no interface) that the keyboard hosts out
+ * of process for its In-keyboard path. It runs every Speech Model but Parakeet (the Host's
+ * engines and Punctuation Restoration) and S1-mini, none of which fit the keyboard's memory
+ * limit. The target and bundle id keep their first name (`CodictateFormattingAU`,
+ * `app.codictate.formattingau`): a new bundle id needs new provisioning and App Store records.
  *
  * During prebuild this plugin:
  *  1. Copies targets/CodictateFormattingAU/ to ios/CodictateFormattingAU/, stamping the
  *     app's version into the extension's Info.plist.
  *  2. Creates the extension target (once), embeds it in the app's PlugIns and makes the app
  *     depend on it.
- *  3. Compiles the AU's own sources plus the Host's S1MiniFormatter.swift and S1MiniBridge.mm
- *     (the same files, not copies), links (does not embed) llama.xcframework, which the app
- *     embeds and the AU loads through `@executable_path/../../Frameworks`.
- *  4. Compiles the AU's FormattingAUContract.swift and AppGroupLog.swift into the keyboard
- *     too, which hosts the AU.
+ *  3. Compiles the AU's own sources plus the Host's transcription pipeline, engines, bridges
+ *     and S1-mini sources (HOST_SOURCES: the same files, not copies). Links (does not embed)
+ *     the dynamic crispasr, parakeet and llama xcframeworks, which the app embeds and the AU
+ *     loads through `@executable_path/../../Frameworks`, and links the static onnxruntime
+ *     with its system frameworks.
+ *  4. Compiles the AU's DictationAUContract.swift and AppGroupLog.swift, and the Host's
+ *     SpeechModelCatalog.swift, into the keyboard too, which hosts the AU.
  *
- * Runs after withKeyboardExtension (the keyboard target, the app's shared sources) and after
- * withLlama (the llama.xcframework reference): app.config.ts wraps it inside both. Every
- * step is idempotent and throws when something it needs is missing.
+ * Runs after every other plugin that touches the project (withKeyboardExtension for the
+ * keyboard target and the app's shared sources, withCrispASR, withLlama, withParakeetCpp and
+ * withOnnxRuntime for the framework references): app.config.ts registers it innermost. Were
+ * it to add a framework reference first, those plugins would find it and skip embedding the
+ * framework in the app. Every step is idempotent and throws when something it needs is
+ * missing.
  */
 
 import {
@@ -30,23 +38,73 @@ import {
 } from "expo/config-plugins";
 import * as fs from "fs";
 import * as path from "path";
-import { LLAMA_IOS_SLICES } from "../scripts/vendor-manifest";
+import {
+  CRISPASR_IOS_SLICES,
+  CRISPASR_XCFRAMEWORK_NAME,
+  LLAMA_IOS_SLICES,
+  LLAMA_XCFRAMEWORK_NAME,
+  ONNXRUNTIME_SYSTEM_FRAMEWORKS,
+  ONNXRUNTIME_XCFRAMEWORK_NAME,
+  PARAKEET_XCFRAMEWORK_NAME,
+} from "../scripts/vendor-manifest";
 
 const AU_NAME = "CodictateFormattingAU";
 const AU_BUNDLE_ID = "app.codictate.formattingau";
 const KEYBOARD_NAME = "CodictateDictationKeyboard";
 const DEPLOYMENT_TARGET = "17.0";
-const LLAMA_FRAMEWORK_PATH = "vendor/llama.xcframework";
+const LLAMA_FRAMEWORK_PATH = `vendor/${LLAMA_XCFRAMEWORK_NAME}`;
+const CRISPASR_FRAMEWORK_PATH = `vendor/${CRISPASR_XCFRAMEWORK_NAME}`;
+/**
+ * The xcframeworks the AU links, each referenced once by the plugin that vendors it. The
+ * dynamic ones are embedded only in the app; onnxruntime is static and links into the AU's
+ * own binary.
+ */
+const AU_FRAMEWORKS = [
+  { path: LLAMA_FRAMEWORK_PATH, plugin: "withLlama" },
+  { path: CRISPASR_FRAMEWORK_PATH, plugin: "withCrispASR" },
+  { path: `vendor/${PARAKEET_XCFRAMEWORK_NAME}`, plugin: "withParakeetCpp" },
+  { path: `vendor/${ONNXRUNTIME_XCFRAMEWORK_NAME}`, plugin: "withOnnxRuntime" },
+];
 
 /** Compiled by the AU only. */
-const AU_SOURCES = ["FormattingAU.swift", "FormattingAUMessageChannel.swift"];
-/** Compiled by the AU and the keyboard. */
-const SHARED_WITH_KEYBOARD = [
-  "FormattingAUContract.swift",
-  "AppGroupLog.swift",
+const AU_SOURCES = [
+  "DictationAU.swift",
+  "DictationAUMessageChannel.swift",
+  "DictationAUSpeech.swift",
 ];
-/** The Host's files in ios/<project>/ the AU compiles too. */
-const HOST_SOURCES = ["S1MiniFormatter.swift", "S1MiniBridge.mm"];
+/** Compiled by the AU and the keyboard. */
+const SHARED_WITH_KEYBOARD = ["DictationAUContract.swift", "AppGroupLog.swift"];
+/**
+ * The Host's files in ios/<project>/ the AU compiles too: the transcription pipeline every
+ * Speech Model but Parakeet runs through, its engines and bridges, Punctuation Restoration
+ * and S1-mini. Keep in step with the Host's list in withKeyboardExtension; a new bridge
+ * header also goes in CodictateFormattingAU-Bridging-Header.h.
+ */
+const HOST_SOURCES = [
+  "SpeechModelCatalog.swift",
+  "DictationReadinessState.swift",
+  "TranscriptionPipeline.swift",
+  "TranscriptionEngine.swift",
+  "TranscriptionLanguages.swift",
+  "WavPCMReader.mm",
+  "WhisperEngine.swift",
+  "WhisperBridge.mm",
+  "CohereEngine.swift",
+  "CohereBridge.mm",
+  "AudioSlicer.swift",
+  "EkkoEngine.swift",
+  "EkkoBridge.mm",
+  "PunctuationRestorer.swift",
+  "EkkoPnc.swift",
+  "EkkoPncTokenizer.swift",
+  "EkkoPncModel.swift",
+  "PythonText.swift",
+  "EkkoPncBridge.mm",
+  "S1MiniFormatter.swift",
+  "S1MiniBridge.mm",
+];
+/** The Host's files the keyboard compiles too, for the In-keyboard path's eligibility. */
+const HOST_SOURCES_FOR_KEYBOARD = ["SpeechModelCatalog.swift"];
 const AU_RESOURCES = ["PrivacyInfo.xcprivacy"];
 /** In the group for Xcode's navigator only. */
 const AU_OTHER_FILES = [
@@ -295,12 +353,18 @@ function applyBuildSettings(
     // Expo's own DEVELOPMENT_TEAM mod runs before this target exists.
     if (teamId) bs.DEVELOPMENT_TEAM = teamId;
     bs.SWIFT_OBJC_BRIDGING_HEADER = `"${AU_NAME}/${AU_NAME}-Bridging-Header.h"`;
+    // The app's sources folder holds the bridges' headers and cohere.h (withCrispASR);
+    // the quoted `#import "crispasr.h"` and `#import "llama.h"` need the slices' Headers/.
     bs.HEADER_SEARCH_PATHS = [
       '"$(inherited)"',
       `"$(SRCROOT)/${projectName}"`,
       ...LLAMA_IOS_SLICES.map(
         (slice) =>
           `"$(SRCROOT)/${LLAMA_FRAMEWORK_PATH}/${slice}/llama.framework/Headers"`,
+      ),
+      ...CRISPASR_IOS_SLICES.map(
+        (slice) =>
+          `"$(SRCROOT)/${CRISPASR_FRAMEWORK_PATH}/${slice}/crispasr.framework/Headers"`,
       ),
     ];
     bs.FRAMEWORK_SEARCH_PATHS = ['"$(inherited)"', '"$(SRCROOT)/vendor"'];
@@ -309,7 +373,8 @@ function applyBuildSettings(
       '"@executable_path/Frameworks"',
       '"@executable_path/../../Frameworks"',
     ];
-    bs.OTHER_LDFLAGS = '"$(inherited)"';
+    // onnxruntime is a static framework: its podspec's system frameworks link here.
+    bs.OTHER_LDFLAGS = `"${["$(inherited)", ...ONNXRUNTIME_SYSTEM_FRAMEWORKS.map((name) => `-framework ${name}`)].join(" ")}"`;
   }
 }
 
@@ -364,11 +429,16 @@ const withFormattingAU: ConfigPlugin = (config) => {
       fail(
         `${KEYBOARD_NAME} target missing; withKeyboardExtension must run first`,
       );
-    const llamaRef = findFileRefByPath(project, LLAMA_FRAMEWORK_PATH);
-    if (!llamaRef)
-      fail(
-        `${LLAMA_FRAMEWORK_PATH} reference missing; withLlama must run first`,
-      );
+    const frameworkRefs = AU_FRAMEWORKS.map(
+      ({ path: frameworkPath, plugin }) => {
+        const ref = findFileRefByPath(project, frameworkPath);
+        if (!ref)
+          fail(
+            `${frameworkPath} reference missing; ${plugin} must run first (register withFormattingAU innermost in app.config.ts)`,
+          );
+        return { name: path.basename(frameworkPath), ref };
+      },
+    );
     const hostRefs = HOST_SOURCES.map((name) => {
       const ref = findFileRefByPath(project, `${projectName}/${name}`);
       if (!ref)
@@ -437,23 +507,28 @@ const withFormattingAU: ConfigPlugin = (config) => {
     }
     for (const { name, ref } of hostRefs) {
       ensureInPhase(project, "PBXSourcesBuildPhase", sources, ref, name);
+      if (HOST_SOURCES_FOR_KEYBOARD.includes(name)) {
+        ensureInPhase(
+          project,
+          "PBXSourcesBuildPhase",
+          keyboardSources,
+          ref,
+          name,
+        );
+      }
     }
     for (const name of AU_RESOURCES) {
       const ref = ensureGroupFile(project, groupKey, name);
       ensureInPhase(project, "PBXResourcesBuildPhase", resources, ref, name);
     }
     for (const name of AU_OTHER_FILES) ensureGroupFile(project, groupKey, name);
-    ensureInPhase(
-      project,
-      "PBXFrameworksBuildPhase",
-      frameworks,
-      llamaRef,
-      "llama.xcframework",
-    );
+    for (const { name, ref } of frameworkRefs) {
+      ensureInPhase(project, "PBXFrameworksBuildPhase", frameworks, ref, name);
+    }
 
     applyBuildSettings(project, auUuid, projectName, c.ios?.appleTeamId);
     console.log(
-      `[withFormattingAU] ${AU_NAME} wired: embedded in PlugIns, S1-mini sources shared, llama linked`,
+      `[withFormattingAU] ${AU_NAME} wired: embedded in PlugIns, ${hostRefs.length} Host sources shared, ${frameworkRefs.map(({ name }) => name).join(", ")} linked`,
     );
     return c;
   });

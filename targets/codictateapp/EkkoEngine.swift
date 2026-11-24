@@ -22,12 +22,17 @@ final class EkkoEngine: TranscriptionEngine {
     private static let sampleRate = 16_000
 
     /// Resolves the ekko GGUF on disk, downloading it if the caller does that.
-    typealias ModelPathProvider = () async throws -> String
-
     private let modelPath: ModelPathProvider
     private let bridge = EkkoBridge()
     /// Every load, transcription and unload runs here, one at a time and in arrival order.
     private let queue = DispatchQueue(label: "com.codictate.ekko", qos: .userInitiated)
+
+    /// The GPU for the next load (the Host's setting). The Dictation AU turns it off after a
+    /// Metal fault; a model loaded on the GPU is then loaded again on the CPU.
+    var allowsGPU: Bool {
+        get { bridge.usesGPU }
+        set { bridge.usesGPU = newValue }
+    }
 
     init(modelPath: @escaping ModelPathProvider) {
         self.modelPath = modelPath
@@ -36,7 +41,7 @@ final class EkkoEngine: TranscriptionEngine {
     /// `languageId` is ignored: the Language Lock pins ekko to Danish before a turn starts.
     func transcribe(wavPath: String, languageId: String) async throws -> String {
         let started = Date()
-        let path = try await modelPath()
+        let path = try await modelPath(.ekko)
         let samples = try Self.readSamples(wavPath: wavPath)
         let slices = try samples.withUnsafeBufferPointer {
             try AudioSlicer.plan(samples: $0, sampleRate: Self.sampleRate, options: .ekko)
@@ -67,16 +72,17 @@ final class EkkoEngine: TranscriptionEngine {
     }
 
     func warmUp() async throws {
-        try await preload(modelPath: modelPath())
+        try await preload(modelPath: modelPath(.ekko))
     }
 
-    /// Loads the GGUF at `modelPath` and holds it. A no-op when it is already loaded.
+    /// Loads the GGUF at `modelPath` and holds it. A no-op when it is already loaded (on the
+    /// GPU or not, as `allowsGPU` asks).
     func preload(modelPath: String) async throws {
         let started = Date()
         let loaded = try await onQueue { [bridge] () -> Bool in
-            if bridge.isLoaded && bridge.loadedModelPath == modelPath { return false }
+            let wasLoaded = bridge.isLoaded && bridge.loadedModelPath == modelPath
             try bridge.loadModel(atPath: modelPath)
-            return true
+            return !wasLoaded
         }
         if loaded {
             NSLog("[EkkoEngine] Model loaded in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")

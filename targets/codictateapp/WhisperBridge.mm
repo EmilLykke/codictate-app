@@ -20,6 +20,7 @@
     if (self) {
         _ctx = nullptr;
         _queue = dispatch_queue_create("com.codictate.whisper", DISPATCH_QUEUE_SERIAL);
+        self.usesGPU = YES;
     }
     return self;
 }
@@ -32,10 +33,9 @@
     [self unloadModel];
 
     struct whisper_context_params cparams = whisper_context_default_params();
-    // This file is built by the main app target only, never by the keyboard extension,
-    // so Metal is available.  The old "GPU not available in extensions" comment was
-    // describing a target this bridge has never been in.
-    cparams.use_gpu = true;
+    // The Host and the Dictation AU build this file, never the keyboard extension. The
+    // Host always asks for Metal; the AU asks for it until a Metal fault (`usesGPU`).
+    cparams.use_gpu = self.usesGPU;
 #if TARGET_OS_SIMULATOR
     // ggml's Metal backend is unreliable under the simulator; force the CPU backend.
     cparams.use_gpu = false;
@@ -50,7 +50,7 @@
     }
 
     _ctx = ctx;
-    NSLog(@"[WhisperBridge] Model loaded from: %@", path);
+    NSLog(@"[WhisperBridge] Model loaded from: %@ (%@)", path, cparams.use_gpu ? @"Metal requested" : @"CPU");
     return YES;
 }
 

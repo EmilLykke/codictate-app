@@ -74,13 +74,38 @@ enum DictationNotification {
 private final class TranscriptionRouter {
     static let shared = TranscriptionRouter()
     private let parakeet = ParakeetEngine()
-    private let whisper = WhisperEngine()
-    private let cohere = CohereEngine()
-    private let ekko = EkkoEngine(modelPath: { try await ModelManager.shared.ensureModel(variant: .ekko) })
+    /// The Host's engines may download a missing model (`ModelManager.ensureModel`).
+    private let whisper = WhisperEngine(modelPath: { try await ModelManager.shared.ensureModel(variant: $0) })
+    private let cohere = CohereEngine(modelPath: { try await ModelManager.shared.ensureModel(variant: $0) })
+    private let ekko = EkkoEngine(modelPath: { try await ModelManager.shared.ensureModel(variant: $0) })
     /// ekko-pnc, held for the life of the process like the engines. nil only without an App
     /// Group container, where ekko cannot be ready either.
     private let punctuation: PunctuationRestorer? = ModelManager.shared.punctuationModelDirectory
         .map { PunctuationRestorer(modelDirectory: $0.path) }
+
+    /// The steps after recording, shared with the Dictation AU. `suite` is the turn's.
+    private func pipeline(suite: UserDefaults) -> TranscriptionPipeline {
+        TranscriptionPipeline(
+            readiness: { DictationReadiness.shared.resolve(variant: $0, languageId: $1) },
+            engine: { [parakeet, whisper, cohere, ekko] variant in
+                switch variant.engine {
+                case .parakeet:
+                    return parakeet
+                case .whisper:
+                    whisper.activeVariant = variant
+                    return whisper
+                case .cohere:
+                    return cohere
+                case .ekko:
+                    return ekko
+                }
+            },
+            punctuation: punctuation,
+            format: { text, languageId in
+                await FormattingManager.shared.formatIfEligible(text, languageId: languageId, suite: suite)
+            }
+        )
+    }
 
     private init() {
         // Same rule as Parakeet: keep the loaded model until memory runs short, then let the
@@ -185,17 +210,13 @@ private final class TranscriptionRouter {
         let variant = ModelManager.Variant(rawValue: preferred) ?? .base
         let storedLanguageId = suite.string(forKey: KeyboardDictationBridge.transcriptionLanguageKey)
             ?? ModelManager.Variant.automaticLanguageId
-        // "auto" means the user expressed no preference, so a Speech Model with a pinned
-        // language runs that language. Resolved once, here, and handed to both the
-        // readiness check and the engine, so the verdict and the run cannot disagree.
-        let languageId = variant.resolvedLanguageId(storedLanguageId)
+        let pipeline = pipeline(suite: suite)
+        // UserDefaults is thread-safe; the Task only hands it back to the main actor.
+        nonisolated(unsafe) let suite = suite
 
-        // Dictation Readiness is consulted before the turn starts, never after. A blocked
-        // state starts nothing and never silently switches to a different Speech Model.
-        // The recording paths gate on this too; this is the pre-spawn race check for a
-        // state that changed while the user was speaking.
-        let readiness = DictationReadiness.shared.resolve(variant: variant, languageId: languageId)
-        if readiness.blocked {
+        let languageId: String
+        switch pipeline.admit(variant: variant, storedLanguageId: storedLanguageId) {
+        case .blocked(let readiness):
             let message = readiness.message ?? "Dictation cannot start right now."
             DispatchQueue.main.async {
                 DictationReadiness.shared.publish()
@@ -203,108 +224,20 @@ private final class TranscriptionRouter {
                 onComplete(nil)
             }
             return
+        case .run(let resolved):
+            languageId = resolved
         }
-
-        let engine: TranscriptionEngine
-        switch variant.engine {
-        case .parakeet:
-            engine = parakeet
-        case .whisper:
-            whisper.activeVariant = variant
-            engine = whisper
-        case .cohere:
-            engine = cohere
-        case .ekko:
-            engine = ekko
-        }
-        let restorer = variant.engine == .ekko ? punctuation : nil
 
         Task {
-            do {
-                let rawText = try await engine.transcribe(wavPath: wavPath, languageId: languageId)
+            let text: String
+            switch await pipeline.transcribe(wavPath: wavPath, variant: variant, languageId: languageId) {
+            case .noSpeech:
                 await MainActor.run {
-                    guard !rawText.isEmpty else {
-                        KeyboardHostRecorder.shared.fail(suite, "No speech detected.")
-                        onComplete(nil)
-                        return
-                    }
+                    KeyboardHostRecorder.shared.fail(suite, "No speech detected.")
+                    onComplete(nil)
                 }
-                guard !rawText.isEmpty else { return }
-                // ekko's Raw Transcript is lowercase and unpunctuated, so Punctuation
-                // Restoration always runs on it. It never fails: on any fault it hands the
-                // words back unchanged.
-                let punctuated = await restorer?.restore(rawText) ?? rawText
-                let text = await FormattingManager.shared.formatIfEligible(
-                    punctuated,
-                    languageId: languageId,
-                    suite: suite
-                )
-                await MainActor.run {
-                    // S1-mini may intentionally remove a filler-only transcript. That is
-                    // a successful turn with no output: leave no consumable result and do
-                    // not post transcriptReady (or let the Intent fallback clear clipboard).
-                    guard !text.isEmpty else {
-                        suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
-                        suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
-                        suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
-                        suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-                        suite.removeObject(forKey: KeyboardDictationBridge.processingMessageKey)
-                        suite.synchronize()
-                        KeyboardHostRecorder.reloadControlWidget()
-                        KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
-                            source,
-                            transcript: "",
-                            suite: suite
-                        )
-                        if #available(iOS 16.2, *),
-                           source != KeyboardDictationBridge.sourceKeyboard {
-                            DictationLiveActivityManager.shared.end()
-                        }
-                        NotificationCenter.default.post(
-                            name: DictationNotification.stateChanged,
-                            object: nil,
-                            userInfo: ["phase": KeyboardDictationBridge.phaseIdle]
-                        )
-                        NSLog("[KeyboardHost] Formatting completed with no output")
-                        onComplete("")
-                        return
-                    }
-                    suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
-                    suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.transcriptTimestampKey)
-                    suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
-                    suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
-                    suite.removeObject(forKey: KeyboardDictationBridge.processingMessageKey)
-                    suite.synchronize()
-                    KeyboardHostRecorder.reloadControlWidget()
-                    KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
-                        source,
-                        transcript: text,
-                        suite: suite
-                    )
-                    if #available(iOS 16.2, *) {
-                        if source == KeyboardDictationBridge.sourceIntent {
-                            // Live Activity handled in handleTranscriptReadyForSource (standby vs end).
-                        } else if source != KeyboardDictationBridge.sourceKeyboard {
-                            DictationLiveActivityManager.shared.updateToReady()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                DictationLiveActivityManager.shared.end()
-                            }
-                        }
-                    }
-                    NotificationCenter.default.post(
-                        name: DictationNotification.transcriptReady,
-                        object: nil,
-                        userInfo: ["transcript": text, "source": source]
-                    )
-                    NotificationCenter.default.post(
-                        name: DictationNotification.stateChanged,
-                        object: nil,
-                        userInfo: ["phase": KeyboardDictationBridge.phaseReady]
-                    )
-                    NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
-                    onComplete(text)
-                }
-            } catch {
+                return
+            case .failed(let error):
                 await MainActor.run {
                     KeyboardHostRecorder.shared.fail(
                         suite,
@@ -312,6 +245,74 @@ private final class TranscriptionRouter {
                     )
                     onComplete(nil)
                 }
+                return
+            case .text(let delivered):
+                text = delivered
+            }
+            await MainActor.run {
+                // S1-mini may intentionally remove a filler-only transcript. That is
+                // a successful turn with no output: leave no consumable result and do
+                // not post transcriptReady (or let the Intent fallback clear clipboard).
+                guard !text.isEmpty else {
+                    suite.set(KeyboardDictationBridge.phaseIdle, forKey: KeyboardDictationBridge.phaseKey)
+                    suite.removeObject(forKey: KeyboardDictationBridge.transcriptKey)
+                    suite.removeObject(forKey: KeyboardDictationBridge.transcriptTimestampKey)
+                    suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+                    suite.removeObject(forKey: KeyboardDictationBridge.processingMessageKey)
+                    suite.synchronize()
+                    KeyboardHostRecorder.reloadControlWidget()
+                    KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
+                        source,
+                        transcript: "",
+                        suite: suite
+                    )
+                    if #available(iOS 16.2, *),
+                       source != KeyboardDictationBridge.sourceKeyboard {
+                        DictationLiveActivityManager.shared.end()
+                    }
+                    NotificationCenter.default.post(
+                        name: DictationNotification.stateChanged,
+                        object: nil,
+                        userInfo: ["phase": KeyboardDictationBridge.phaseIdle]
+                    )
+                    NSLog("[KeyboardHost] Formatting completed with no output")
+                    onComplete("")
+                    return
+                }
+                suite.set(text, forKey: KeyboardDictationBridge.transcriptKey)
+                suite.set(Date().timeIntervalSince1970, forKey: KeyboardDictationBridge.transcriptTimestampKey)
+                suite.set(KeyboardDictationBridge.phaseReady, forKey: KeyboardDictationBridge.phaseKey)
+                suite.removeObject(forKey: KeyboardDictationBridge.errorKey)
+                suite.removeObject(forKey: KeyboardDictationBridge.processingMessageKey)
+                suite.synchronize()
+                KeyboardHostRecorder.reloadControlWidget()
+                KeyboardHostRecorder.shared.handleTranscriptReadyForSource(
+                    source,
+                    transcript: text,
+                    suite: suite
+                )
+                if #available(iOS 16.2, *) {
+                    if source == KeyboardDictationBridge.sourceIntent {
+                        // Live Activity handled in handleTranscriptReadyForSource (standby vs end).
+                    } else if source != KeyboardDictationBridge.sourceKeyboard {
+                        DictationLiveActivityManager.shared.updateToReady()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            DictationLiveActivityManager.shared.end()
+                        }
+                    }
+                }
+                NotificationCenter.default.post(
+                    name: DictationNotification.transcriptReady,
+                    object: nil,
+                    userInfo: ["transcript": text, "source": source]
+                )
+                NotificationCenter.default.post(
+                    name: DictationNotification.stateChanged,
+                    object: nil,
+                    userInfo: ["phase": KeyboardDictationBridge.phaseReady]
+                )
+                NSLog("[KeyboardHost] Transcription ready, length=\(text.count)")
+                onComplete(text)
             }
         }
     }
@@ -803,7 +804,7 @@ final class KeyboardHostRecorder: NSObject {
             NSLog("[KeyboardHost] Audio interruption ended — restoring session")
             let session = AVAudioSession.sharedInstance()
             do {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers])
                 try session.setActive(true, options: [])
             } catch {
                 NSLog("[KeyboardHost] Failed to restore session after interruption: \(error)")
@@ -1102,12 +1103,9 @@ final class KeyboardHostRecorder: NSObject {
 
     func requestStopAndWaitFromIntent() async -> String? {
         await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { [weak self] in
-                guard let self else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                self.requestStopFromIntent { transcript in
+            // `shared` lives for the process, so there is no `self` to lose.
+            DispatchQueue.main.async {
+                KeyboardHostRecorder.shared.requestStopFromIntent { transcript in
                     continuation.resume(returning: transcript)
                 }
             }
@@ -1399,7 +1397,7 @@ final class KeyboardHostRecorder: NSObject {
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,
-                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
+                options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers]
             )
         } catch {
             NSLog("[KeyboardHost] setCategory failed: \(error.localizedDescription)")

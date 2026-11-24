@@ -19,7 +19,7 @@ bun run ios            # expo run:ios
 
 **Launch (scene life cycle, SDK 58):** `AppDelegate.didFinishLaunching` runs `KeyboardHostRecorder.bootstrap()` on every launch and only creates the React Native factory. `SceneDelegate` starts React Native when its scene first enters the foreground, never on a background launch (Action Button intent, background download relaunch). Host deep links (`keyboard-record`, `keyboard-session`, `dictation`) go to `AppDelegate.handleHostDeepLink` and never reach JS; `SceneDelegate` filters them out of warm links.
 
-Plugin order matters: Expo runs mods in reverse registration order, so inner wrappers in `app.config.ts` run later. `withKeyboardExtension` registers the keyboard target last so it exists before its other mods, and `withFluidAudio` sits inside it to link FluidAudio to that target. `withFormattingAU` sits inside `withLlama`, so it finds the `llama.xcframework` reference to link (were it first, `withLlama` would skip embedding llama in the app), the keyboard target and the app's S1-mini sources.
+Plugin order matters: Expo runs mods in reverse registration order, so inner wrappers in `app.config.ts` run later. `withKeyboardExtension` registers the keyboard target last so it exists before its other mods, and `withFluidAudio` sits inside it to link FluidAudio to that target. `withFormattingAU` (the Dictation AU) is innermost, so it runs last and finds the crispasr, llama, parakeet and onnxruntime references to link (were it first, those plugins would find a reference and skip embedding their framework in the app), the keyboard target and the app's shared sources.
 
 ## Architecture
 
@@ -27,15 +27,15 @@ Plugin order matters: Expo runs mods in reverse registration order, so inner wra
 
 **Entry points:**
 - Main app (JS + `KeyboardHostRecorder.swift`) -- in-app dictation
-- `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button. With Parakeet as the Speech Model it dictates by itself on the In-keyboard path (`InKeyboardDictation.swift`: `getUserMedia` in a hidden `WKWebView`, Parakeet through FluidAudio on the Neural Engine, models read from the App Group); otherwise it only triggers the Host (Warm or Cold path)
-- `CodictateFormattingAU` extension -- the Formatting AU (`targets/CodictateFormattingAU/`, wired by `plugins/withFormattingAU.ts`): an `aufx` Audio Unit (`com.apple.AudioUnit-UI`, no interface) that the keyboard instantiates out of process (`KeyboardFormattingAUClient.swift`) to run S1-mini on an In-keyboard transcript. It compiles the Host's `S1MiniFormatter.swift` and `S1MiniBridge.mm` (the same files) and links the app's `llama.xcframework`. The keyboard needs the `inter-app-audio` entitlement, without which iOS hides the AU from it. Messages: `FormattingAUContract.swift` (compiled into both). Both write `[Keyboard]` / `[FormattingAU]` lines to `<App Group>/Library/Logs/keyboard.log` (`AppGroupLog.swift`), pulled with `xcrun devicectl device copy from --domain-type appGroupDataContainer --domain-identifier group.app.codictate --source Library/Logs/keyboard.log`
+- `CodictateDictationKeyboard` extension -- system keyboard with a Dictate button. It dictates by itself on the In-keyboard path with every Speech Model (`InKeyboardDictation.swift`: `getUserMedia` in a hidden `WKWebView` writes a WAV to the App Group's `KeyboardRecordings/`). Parakeet transcribes in the keyboard (FluidAudio on the Neural Engine, models read from the App Group); every other Speech Model goes to the Dictation AU. When the In-keyboard path is not eligible it triggers the Host (Warm or Cold path)
+- `CodictateFormattingAU` extension -- the Dictation AU (`targets/CodictateFormattingAU/`, wired by `plugins/withFormattingAU.ts`; target and bundle id keep their old Formatting AU name): an `aufx` Audio Unit (`com.apple.AudioUnit-UI`, no interface, no memory ceiling) that the keyboard instantiates out of process (`KeyboardDictationAUClient.swift`). It transcribes In-keyboard turns of `base`, `base_en`, `hviske` and `ekko` with the Host's own `TranscriptionPipeline`, engines and bridges (`DictationAUSpeech.swift` keeps one engine loaded and falls back to the CPU for the rest of its process when Metal fails), restores ekko's punctuation, formats with S1-mini, and formats Parakeet turns the keyboard transcribed. It compiles the Host's files listed in `HOST_SOURCES` in `withFormattingAU.ts` (the same files, not copies), links the app's dynamic `crispasr`, `parakeet` and `llama` xcframeworks (embedded once, in the app, loaded through `@executable_path/../../Frameworks`) and the static `onnxruntime`. The keyboard needs the `inter-app-audio` entitlement, without which iOS hides the AU from it. Messages: `DictationAUContract.swift` (compiled into both; `prewarm {variant}`, `format`, `transcribe`, `poll`, `cancel`, `unload`). Both write `[Keyboard]` / `[DictationAU]` lines to `<App Group>/Library/Logs/keyboard.log` (`AppGroupLog.swift`), pulled with `xcrun devicectl device copy from --domain-type appGroupDataContainer --domain-identifier group.app.codictate --source Library/Logs/keyboard.log`
 - `AudioRecordingIntent` -- Action Button / Shortcuts
 
-**Recording flow:** keyboard (Warm or Cold path; the In-keyboard path writes no phase and never involves the Host) or intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to `ParakeetEngine`, `WhisperEngine`, `CohereEngine` or `EkkoEngine` (ekko's text then goes through `PunctuationRestorer`), runs S1-mini formatting when eligible, writes transcript back to App Group. On the In-keyboard path S1-mini runs in the Formatting AU instead: prewarmed when the turn starts, asked to format after Parakeet with a timeout, Parakeet's text inserted on any fault.
+**Recording flow:** keyboard (Warm or Cold path; the In-keyboard path writes no phase and never involves the Host) or intent writes phase=start to App Group, main app picks it up via Darwin notification or deep link, records with `AVAudioRecorder` at 16 kHz, then routes through `TranscriptionEngine` protocol to `ParakeetEngine`, `WhisperEngine`, `CohereEngine` or `EkkoEngine` (ekko's text then goes through `PunctuationRestorer`), runs S1-mini formatting when eligible, writes transcript back to App Group. The steps after recording are `TranscriptionPipeline` (`admit`: Language Lock and Dictation Readiness; `transcribe`: engine, Punctuation Restoration, S1-mini), shared by the Host and the Dictation AU. On the In-keyboard path the Dictation AU is prewarmed when the turn starts (S1-mini, and the Speech Model unless it is Parakeet). Parakeet turns: the keyboard transcribes, then asks the AU to format with a timeout, and inserts Parakeet's text on any fault. Other Speech Models: one `transcribe` request with the WAV's App Group path; the AU replies `transcribed` (text, or empty for no speech), `blocked` or `failed`, and reports `formatting` with the unformatted text while S1-mini runs, which the keyboard inserts if formatting runs out of time. Its timeout scales with the audio (`KeyboardDictationAUClient.transcriptionTimeout`); a failure or timeout shows "Transcription failed" and sets the In-keyboard path aside for that Speech Model in the keyboard process.
 
 **ASR engines (TranscriptionEngine protocol):**
 - `ParakeetEngine` -- wraps FluidAudio's `AsrManager`. Uses `AsrModels.downloadAndLoad(to: modelDirectory, version: .v3)` for model management, with the models in the App Group. Runs on Neural Engine via CoreML.
-- `WhisperEngine` -- wraps the existing `WhisperBridge` (ObjC++). Loads `ggml-base-q5_1.bin` from the App Group container. CPU-only.
+- `WhisperEngine` -- wraps the existing `WhisperBridge` (ObjC++). Loads `ggml-base-q5_1.bin` (or `ggml-base.en-q5_1.bin`) from the App Group container. Asks crispasr for Metal on device (`WhisperBridge.usesGPU`), CPU on the simulator.
 - `CohereEngine` -- wraps `CohereBridge` (ObjC++) on crispasr's cohere backend. Runs the Danish hviske GGUF.
 - `EkkoEngine` -- wraps `EkkoBridge` (ObjC++) on parakeet.cpp's C API. Runs the Danish ekko GGUF slice by slice (`AudioSlicer`), Metal on device, CPU on the simulator. Its Raw Transcript is lowercase and unpunctuated, so the router always passes it through `PunctuationRestorer` (ekko-pnc on ONNX Runtime via `EkkoPncBridge`), which never fails a Dictation. Loaded while the user speaks, like Parakeet.
 
@@ -46,8 +46,8 @@ Engine selection is stored in UserDefaults under `preferredModelVariant` (App Gr
 | Variant | Engine | Storage | Size | Hardware |
 |---|---|---|---|---|
 | `parakeet` | Parakeet TDT v3 (FluidAudio) | `FluidAudio/Models/parakeet-tdt-0.6b-v3/` (App Group) | ~500 MB | Neural Engine |
-| `base` | Whisper base-q5_1 | `ggml-base-q5_1.bin` (App Group) | ~57 MB | CPU |
-| `base_en` | Whisper base.en-q5_1 | `ggml-base.en-q5_1.bin` (App Group) | ~57 MB | CPU |
+| `base` | Whisper base-q5_1 | `ggml-base-q5_1.bin` (App Group) | ~57 MB | GPU (Metal) |
+| `base_en` | Whisper base.en-q5_1 | `ggml-base.en-q5_1.bin` (App Group) | ~57 MB | GPU (Metal) |
 | `hviske` | hviske-v5-tiny q5_0 (crispasr) | `hviske-v5-tiny-q5_0.gguf` (App Group) | ~181 MB | GPU (Metal) |
 | `ekko` | ekko-v1-tiny q5_0 (parakeet.cpp) + ekko-pnc (ONNX Runtime) | `ekko-v1-tiny-q5_0.gguf` + `ekko-pnc/` (App Group) | ~152 MB | GPU (Metal) + CPU |
 
@@ -60,20 +60,23 @@ Added via `plugins/withFluidAudio.ts` config plugin. This plugin injects the `XC
 ## TranscriptionEngine -- files that must stay consistent
 
 The engine abstraction lives in `targets/codictateapp/`:
-- `TranscriptionEngine.swift` -- protocol with `func transcribe(wavPath: String) async throws -> String`
+- `TranscriptionEngine.swift` -- protocol with `func transcribe(wavPath: String, languageId: String) async throws -> String`, `ModelPathProvider` (engines never download themselves: the Host passes `ModelManager.ensureModel`, the Dictation AU the installed file only) and `TranscriptionEngineError.noSpeech`
+- `TranscriptionPipeline.swift` -- the steps after recording, shared by the Host's `TranscriptionRouter` and the Dictation AU
+- `SpeechModelCatalog.swift` -- the Speech Models (`ModelManager.Variant` is an alias) and their on-disk readiness; compiled into the Host, the keyboard and the Dictation AU
+- `DictationReadinessState.swift` -- Dictation Readiness's verdict and rule; compiled into the Host and the Dictation AU
 - `ParakeetEngine.swift` -- FluidAudio wrapper + `ParakeetModelManager`
 - `WhisperEngine.swift` -- WhisperBridge wrapper
 - `CohereEngine.swift` -- CohereBridge wrapper (hviske)
 - `EkkoEngine.swift` -- EkkoBridge wrapper (ekko), with `AudioSlicer.swift`
 - `PunctuationRestorer.swift` -- ekko-pnc, with `EkkoPnc.swift`, `EkkoPncTokenizer.swift`, `EkkoPncModel.swift`, `PythonText.swift` and `EkkoPncBridge`
 
-These are compiled into the main app target by the `withKeyboardExtension` config plugin (see `ensureSourceFileBuiltByMainAppTarget` calls). A new Obj-C++ bridge header also goes in that plugin's bridging-header list.
+These are compiled into the main app target by the `withKeyboardExtension` config plugin (see `ensureSourceFileBuiltByMainAppTarget` calls). A new Obj-C++ bridge header also goes in that plugin's bridging-header list. Every one but `ParakeetEngine.swift` (and their bridges, `WavPCMReader.mm` and `TranscriptionLanguages.swift`) is compiled into the Dictation AU too: keep `HOST_SOURCES` in `plugins/withFormattingAU.ts` and `targets/CodictateFormattingAU/CodictateFormattingAU-Bridging-Header.h` in step, and keep these files free of Host-only APIs (`UIApplication`, Live Activities, `ModelManager`, download notifications). The bridges' `usesGPU` defaults to the Host's Metal; only the Dictation AU turns it off.
 
 ## ModelManager -- three files that must stay in sync
 
 Whenever you add, remove, or modify a model variant, update all three:
 
-1. `targets/codictateapp/ModelManager.swift` -- source of truth for the main app target
+1. `targets/codictateapp/SpeechModelCatalog.swift` -- source of truth for `Variant` (shared by the Host, the keyboard and the Dictation AU); its download URLs are in `targets/codictateapp/ModelManager.swift`
 2. `ios/Codictate/ModelManager.swift` -- main app target (generated by prebuild)
 3. `modules/codictate-dictation/ios/AppGroupModelManager.swift` -- Expo module (cannot import main-app symbols)
 

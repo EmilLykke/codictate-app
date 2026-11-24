@@ -47,6 +47,8 @@ static NSString *EkkoString(const char *text, NSString *fallback) {
     /// never pays the load.  Guarded by `_lock`, which also keeps one transcription at a time.
     parakeet_ctx *_ctx;
     NSString *_loadedModelPath;
+    /// What `usesGPU` was for the loaded model.  Guarded by `_lock`.
+    BOOL _loadedWithGPU;
     std::mutex _lock;
 }
 
@@ -54,6 +56,7 @@ static NSString *EkkoString(const char *text, NSString *fallback) {
     self = [super init];
     if (self) {
         _ctx = nullptr;
+        self.usesGPU = YES;
     }
     return self;
 }
@@ -70,10 +73,16 @@ static NSString *EkkoString(const char *text, NSString *fallback) {
 
 - (BOOL)loadModelAtPath:(NSString *)path error:(NSError **)error {
     std::lock_guard<std::mutex> guard(_lock);
-    if (_ctx && [_loadedModelPath isEqualToString:path]) return YES;
+    const BOOL wantGPU = self.usesGPU;
+    if (_ctx && [_loadedModelPath isEqualToString:path] && _loadedWithGPU == wantGPU) return YES;
     [self unloadLocked];
 
     EkkoSetEnvironmentOnce();
+    if (!wantGPU) {
+        // parakeet.cpp reads it each time it builds a backend, i.e. on this load.  Process-wide
+        // and never undone: only the Dictation AU clears `usesGPU`, and only for good.
+        setenv("PARAKEET_DEVICE", "cpu", 1);
+    }
     parakeet_ctx *ctx = parakeet_capi_load(path.fileSystemRepresentation);
     if (!ctx) {
         // Thread-local and valid until the next load on this thread: read it right here.
@@ -87,7 +96,8 @@ static NSString *EkkoString(const char *text, NSString *fallback) {
     }
     _ctx = ctx;
     _loadedModelPath = [path copy];
-    NSLog(@"[EkkoBridge] Model loaded from: %@", path);
+    _loadedWithGPU = wantGPU;
+    NSLog(@"[EkkoBridge] Model loaded from: %@ (%@)", path, wantGPU ? @"GPU requested" : @"CPU");
     return YES;
 }
 

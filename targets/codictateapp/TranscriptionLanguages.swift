@@ -11,7 +11,7 @@ import Foundation
 enum TranscriptionLanguages {
 
     /// The picker id meaning "let the Speech Model decide".
-    static let automaticId = ModelManager.Variant.automaticLanguageId
+    static let automaticId = SpeechModelCatalog.Variant.automaticLanguageId
 
     /// What `whisper_full_params.language` wants when it should detect the language.
     static let whisperAutoCode = "auto"

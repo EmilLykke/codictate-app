@@ -33,6 +33,7 @@ static NSString *const kCohereFallbackLanguage = @"da";
     if (self) {
         _ctx = nullptr;
         _queue = dispatch_queue_create("com.codictate.cohere", DISPATCH_QUEUE_SERIAL);
+        self.usesGPU = YES;
     }
     return self;
 }
@@ -45,7 +46,7 @@ static NSString *const kCohereFallbackLanguage = @"da";
     [self unloadModel];
 
     struct cohere_context_params cparams = cohere_context_default_params();
-    cparams.use_gpu = true;
+    cparams.use_gpu = self.usesGPU;
 #if TARGET_OS_SIMULATOR
     // ggml's Metal backend is unreliable under the simulator; force the CPU backend.
     cparams.use_gpu = false;
@@ -60,7 +61,7 @@ static NSString *const kCohereFallbackLanguage = @"da";
     }
 
     _ctx = ctx;
-    NSLog(@"[CohereBridge] Model loaded from: %@", path);
+    NSLog(@"[CohereBridge] Model loaded from: %@ (%@)", path, cparams.use_gpu ? @"Metal requested" : @"CPU");
     return YES;
 }
 

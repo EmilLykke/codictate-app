@@ -18,7 +18,9 @@ enum KbdSuite {
     static let transcriptionLanguageKey = "transcriptionLanguageId"
     static let parakeetModelReadyKey = "parakeetModelReady"
     static let hostMicrophoneGrantedKey = "hostMicrophoneGranted"
-    /// Read to route an In-keyboard transcript through the Formatting AU; the Host and JS
+    /// Dictation Readiness JSON the Host publishes (`KeyboardDictationBridge.dictationReadinessKey`).
+    static let dictationReadinessKey = "dictationReadiness"
+    /// Read to route an In-keyboard transcript through the Dictation AU; the Host and JS
     /// write them (`FormattingConfiguration`).
     static let formattingModelKey = "formattingModel"
     static let formattingStyleKey = "formattingStyle"
@@ -185,8 +187,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         parakeetLoadingChanged()
     }
 
-    /// After the first frame: preloads the In-keyboard path's capture page and Parakeet, so a
-    /// tap finds them ready.
+    /// After the first frame: preloads the In-keyboard path's capture page (and Parakeet when
+    /// it is the Speech Model), so a tap finds them ready.
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false)
@@ -210,8 +212,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             inKeyboard.cancel()
             viewState = .idle
         }
-        // S1-mini must not stay loaded for a hidden keyboard.
-        KeyboardFormattingAUClient.shared.disconnect()
+        // The Dictation AU's models must not stay loaded for a hidden keyboard.
+        KeyboardDictationAUClient.shared.disconnect()
     }
 
     override func didReceiveMemoryWarning() {
@@ -228,9 +230,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
             inKeyboard.stop()
             // The page flushes its last buffer before transcribing starts (up to 1.5 s): show
             // the stop at once. `onProcessing` sets the final message.
-            viewState = .processing(
-                message: KeyboardParakeet.shared.isLoaded ? nil : InKeyboardDictation.firstUseMessage
-            )
+            viewState = .processing(message: inKeyboard.processingMessageAtStop)
             return
         }
         suite?.synchronize()

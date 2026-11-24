@@ -2,7 +2,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// S1-mini on llama.cpp. Compiled into the Host and into the Formatting AU
+/// S1-mini on llama.cpp. Compiled into the Host and into the Dictation AU
 /// (`CodictateFormattingAU`). The defaults are the Host's: Metal, no CPU retry.
 @interface S1MiniBridge : NSObject
 

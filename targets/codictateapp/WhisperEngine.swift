@@ -1,16 +1,27 @@
 import Foundation
 
 /// Whisper ASR backend. Wraps the ObjC++ WhisperBridge, which runs crispasr's
-/// whisper backend, loading the GGML model from the App Group container via
-/// ModelManager.
-final class WhisperEngine: TranscriptionEngine {
+/// whisper backend, loading the GGML model the `ModelPathProvider` resolves from the
+/// App Group container.
+/// `@unchecked Sendable`: every use of the bridge and the loaded-model state runs on the main
+/// queue; `allowsGPU` is set only between runs (the Dictation AU's serial chain).
+final class WhisperEngine: TranscriptionEngine, @unchecked Sendable {
 
-    var activeVariant: ModelManager.Variant = .base
+    var activeVariant: SpeechModelCatalog.Variant = .base
+    /// Metal for the next load (the Host's setting). The Dictation AU turns it off after a
+    /// Metal fault; a model loaded the other way is loaded again.
+    var allowsGPU = true
+    private let modelPath: ModelPathProvider
     private let bridge = WhisperBridge()
     private var loadedModelPath: String?
+    private var loadedWithGPU = true
+
+    init(modelPath: @escaping ModelPathProvider) {
+        self.modelPath = modelPath
+    }
 
     func transcribe(wavPath: String, languageId: String) async throws -> String {
-        let modelPath = try await ensureModel()
+        let modelPath = try await modelPath(activeVariant)
         return try await runBridge(
             wavPath: wavPath,
             modelPath: modelPath,
@@ -18,26 +29,42 @@ final class WhisperEngine: TranscriptionEngine {
         )
     }
 
+    /// Resolves the model and loads it, so the next `transcribe` finds it loaded.
     func warmUp() async throws {
-        _ = try await ensureModel()
+        let modelPath = try await modelPath(activeVariant)
+        try await onMain { [self] in try ensureLoaded(modelPath) }
+    }
+
+    /// Frees the model. Call only with no transcription running.
+    func unload() {
+        DispatchQueue.main.async { [self] in
+            bridge.unloadModel()
+            loadedModelPath = nil
+        }
     }
 
     // MARK: - Private
 
-    private func ensureModel() async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            ModelManager.shared.ensureModel(
-                variant: self.activeVariant,
-                onProgress: { _ in },
-                onComplete: { result in
-                    switch result {
-                    case .success(let path):
-                        continuation.resume(returning: path)
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
-                    }
-                }
+    /// Main queue only, like every use of `bridge` and `loadedModelPath`.
+    private func ensureLoaded(_ modelPath: String) throws {
+        if bridge.isLoaded, loadedModelPath == modelPath, loadedWithGPU == allowsGPU { return }
+        bridge.usesGPU = allowsGPU
+        guard bridge.loadModel(atPath: modelPath) else {
+            loadedModelPath = nil
+            throw NSError(
+                domain: "WhisperEngine", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Could not load the speech model."]
             )
+        }
+        loadedModelPath = modelPath
+        loadedWithGPU = allowsGPU
+    }
+
+    private func onMain(_ work: @escaping () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.main.async {
+                continuation.resume(with: Result { try work() })
+            }
         }
     }
 
@@ -56,15 +83,11 @@ final class WhisperEngine: TranscriptionEngine {
                     return
                 }
 
-                if !self.bridge.isLoaded || self.loadedModelPath != modelPath {
-                    guard self.bridge.loadModel(atPath: modelPath) else {
-                        continuation.resume(throwing: NSError(
-                            domain: "WhisperEngine", code: 2,
-                            userInfo: [NSLocalizedDescriptionKey: "Could not load the speech model."]
-                        ))
-                        return
-                    }
-                    self.loadedModelPath = modelPath
+                do {
+                    try self.ensureLoaded(modelPath)
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
                 }
 
                 // The value is a picker id, not a whisper code: `zh-cn` and `zh-tw` are
@@ -75,12 +98,13 @@ final class WhisperEngine: TranscriptionEngine {
                 self.bridge.transcribeWavFile(wavPath, language: whisperCode) { transcript, errorMsg in
                     if let text = transcript, !text.isEmpty {
                         continuation.resume(returning: text)
-                    } else {
-                        let msg = errorMsg ?? "No speech detected."
+                    } else if let errorMsg {
                         continuation.resume(throwing: NSError(
                             domain: "WhisperEngine", code: 3,
-                            userInfo: [NSLocalizedDescriptionKey: msg]
+                            userInfo: [NSLocalizedDescriptionKey: errorMsg]
                         ))
+                    } else {
+                        continuation.resume(throwing: TranscriptionEngineError.noSpeech)
                     }
                 }
             }

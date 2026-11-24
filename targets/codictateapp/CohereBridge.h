@@ -13,6 +13,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns YES if a model is currently loaded.
 @property (nonatomic, readonly) BOOL isLoaded;
 
+/// YES (default, the Host's setting): the next load asks crispasr for Metal. NO: CPU only.
+/// Never Metal under the simulator. The Dictation AU turns it off after a Metal fault.
+@property (atomic) BOOL usesGPU;
+
 /// Load the GGUF model at the given file-system path.
 /// Returns YES on success.
 - (BOOL)loadModelAtPath:(NSString *)path;
