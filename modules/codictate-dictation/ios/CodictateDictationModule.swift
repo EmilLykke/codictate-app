@@ -64,6 +64,10 @@ public final class CodictateDictationModule: Module {
     /// The JS event name is the same literal as the notification name, on purpose.
     private static let readinessEventName = "codictate.readiness.changed"
 
+    // Mirror of `SpeechModelSelectionNotification.changed`: the keyboard's model switcher
+    // changed the Speech Model.
+    private static let speechModelChangedNotification = Notification.Name("codictate.speechModel.changed")
+
     // Mirror of `ParakeetModelNotification.preparing` and its App Group key.
     private static let parakeetPreparingNotification = Notification.Name("codictate.parakeet.preparing")
     private static let parakeetPreparingKey = "parakeetPreparing"
@@ -73,6 +77,8 @@ public final class CodictateDictationModule: Module {
     private var failureObserver: NSObjectProtocol?
     private var readinessObserver: NSObjectProtocol?
     private var parakeetPreparingObserver: NSObjectProtocol?
+    private var speechModelObserver: NSObjectProtocol?
+    private var formattingSettingsObserver: NSObjectProtocol?
     private var formattingProgressObserver: NSObjectProtocol?
     private var formattingReadyObserver: NSObjectProtocol?
     private var formattingFailedObserver: NSObjectProtocol?
@@ -91,6 +97,8 @@ public final class CodictateDictationModule: Module {
             "onFormattingModelProgress",
             "onFormattingModelStatus",
             "onParakeetPreparing",
+            "onPreferredModelChange",
+            "onFormattingSettingsChange",
             Self.readinessEventName
         )
 
@@ -478,6 +486,28 @@ public final class CodictateDictationModule: Module {
             self.sendEvent(Self.readinessEventName, Self.normalizeReadiness(raw))
         }
 
+        // The keyboard's model panel wrote the Speech Model or the Formatting Model.
+        speechModelObserver = NotificationCenter.default.addObserver(
+            forName: Self.speechModelChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let variant = note.userInfo?["variant"] as? String else { return }
+            self?.sendEvent("onPreferredModelChange", ["variant": variant])
+        }
+
+        // Also fires for this module's own writes; JS re-reads the same values then.
+        formattingSettingsObserver = NotificationCenter.default.addObserver(
+            forName: Self.formattingSettingsChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            let model = Self.readFormattingSetting(
+                key: Self.formattingModelKey, allowed: ["off", "s1-mini"], defaultValue: "off"
+            )
+            self?.sendEvent("onFormattingSettingsChange", ["model": model])
+        }
+
         parakeetPreparingObserver = NotificationCenter.default.addObserver(
             forName: Self.parakeetPreparingNotification,
             object: nil,
@@ -656,6 +686,8 @@ public final class CodictateDictationModule: Module {
         if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
         if let readinessObserver { NotificationCenter.default.removeObserver(readinessObserver) }
         if let parakeetPreparingObserver { NotificationCenter.default.removeObserver(parakeetPreparingObserver) }
+        if let speechModelObserver { NotificationCenter.default.removeObserver(speechModelObserver) }
+        if let formattingSettingsObserver { NotificationCenter.default.removeObserver(formattingSettingsObserver) }
         if let formattingProgressObserver { NotificationCenter.default.removeObserver(formattingProgressObserver) }
         if let formattingReadyObserver { NotificationCenter.default.removeObserver(formattingReadyObserver) }
         if let formattingFailedObserver { NotificationCenter.default.removeObserver(formattingFailedObserver) }
@@ -664,6 +696,8 @@ public final class CodictateDictationModule: Module {
         failureObserver = nil
         readinessObserver = nil
         parakeetPreparingObserver = nil
+        speechModelObserver = nil
+        formattingSettingsObserver = nil
         formattingProgressObserver = nil
         formattingReadyObserver = nil
         formattingFailedObserver = nil

@@ -58,6 +58,18 @@ final class KeyboardDictationAUClient: @unchecked Sendable {
             && suite.bool(forKey: KbdSuite.s1MiniVerifiedKey)
     }
 
+    /// S1-mini is downloaded: the Host verified it and the file is whole. Mirrors
+    /// `FormattingConfiguration.modelIsReady`, which the keyboard does not compile.
+    static func s1MiniIsInstalled(suite: UserDefaults?) -> Bool {
+        guard let suite, suite.bool(forKey: KbdSuite.s1MiniVerifiedKey),
+              let path = FileManager.default
+                .containerURL(forSecurityApplicationGroupIdentifier: KbdSuite.suiteName)?
+                .appendingPathComponent("s1-mini-q4_k_m.gguf").path,
+              let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int64
+        else { return false }
+        return size == 484_219_808
+    }
+
     /// How long a format may take before the unformatted text goes in instead: 8 s, plus time
     /// for a long dictation, whose output S1-mini generates token by token.
     static func timeout(for text: String) -> TimeInterval {
@@ -84,6 +96,21 @@ final class KeyboardDictationAUClient: @unchecked Sendable {
             let accepted = send(.prewarm, payload)?[Key.accepted] as? Bool ?? false
             AppGroupLog.write(
                 "[Keyboard] Dictation AU prewarm\(variant.map { " \($0)" } ?? "") \(accepted ? "accepted" : "refused or no answer")"
+            )
+        }
+    }
+
+    /// `prewarm` for an AU that is already running, so it lets go of what the keyboard no
+    /// longer uses (S1-mini turned off, or the Speech Model once Parakeet is selected);
+    /// nothing when it is not running.
+    func prewarmIfRunning(variant: String?) {
+        queue.async { [self] in
+            guard channel != nil else { return }
+            var payload: [AnyHashable: Any] = [:]
+            if let variant { payload[Key.variant] = variant }
+            let accepted = send(.prewarm, payload)?[Key.accepted] as? Bool ?? false
+            AppGroupLog.write(
+                "[Keyboard] Dictation AU settings refresh\(variant.map { " \($0)" } ?? "") \(accepted ? "loading" : "nothing to load")"
             )
         }
     }

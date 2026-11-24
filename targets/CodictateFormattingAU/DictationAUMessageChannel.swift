@@ -111,10 +111,14 @@ final class DictationAUMessageChannel: NSObject, AUMessageChannel {
     }
 
     /// Starts loading S1-mini when it is selected, and `variant` on the speech chain. True
-    /// when either started.
+    /// when either started. Also lets go of what the keyboard no longer uses: the Speech
+    /// Model when `variant` is Parakeet (the keyboard switched to it), and S1-mini when it is
+    /// no longer selected.
     private func prewarm(variant: SpeechModelCatalog.Variant?) -> Bool {
         var started = false
-        if let variant, variant != .parakeet {
+        if variant == .parakeet {
+            speech.unloadAll(reason: "Parakeet selected")
+        } else if let variant {
             AppGroupLog.write("[DictationAU] Prewarm \(variant.rawValue) \(DictationAUMemory.current())")
             speech.enqueue { [speech] in await speech.prewarm(variant) }
             started = true
@@ -125,6 +129,7 @@ final class DictationAUMessageChannel: NSObject, AUMessageChannel {
     private func prewarmS1Mini() -> Bool {
         if let reason = blockedReason() {
             AppGroupLog.write("[DictationAU] S1-mini prewarm skipped: \(reason)")
+            unloadS1MiniIfIdle(reason: reason)
             return false
         }
         guard let path = FormattingConfiguration.modelPath else { return false }
@@ -362,6 +367,18 @@ final class DictationAUMessageChannel: NSObject, AUMessageChannel {
             reason = "cancelled"
         }
         lock.unlock()
+    }
+
+    /// Frees S1-mini when it is loaded and no request is using it.
+    private func unloadS1MiniIfIdle(reason: String) {
+        lock.lock()
+        let busy = status == .pending || status == .formatting
+        let loaded = modelLoaded
+        lock.unlock()
+        guard loaded, !busy else { return }
+        bridge.unloadModel()
+        markLoaded(false)
+        AppGroupLog.write("[DictationAU] S1-mini unloaded (\(reason)) \(DictationAUMemory.current())")
     }
 
     private func unload(reason: String) {

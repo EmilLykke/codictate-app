@@ -63,7 +63,20 @@ Passive Dynamic Island / lock-screen state after keyboard dictation completes. S
 
 ## Keyboard dictate button (visual states)
 
-On the Codictate keyboard extension, the Dictate button is a small capsule (`DictatePill`) at the right of a quiet 44 pt strip above the keys, with only the dismiss glyph at the strip's left. It carries no text: each phase has a fill and a glyph. **Idle** is a key-colored capsule (white in light mode, the dark key grey in dark mode, with the keys' shadow) and a mic; while Parakeet's first-time load runs (**preparing**) the mic dims beside a small spinner. **Recording** is red with five white level bars (they follow the audio on the In-keyboard path and breathe slowly on the Warm and Cold paths, where the keyboard hears nothing). **Transcribing** is orange with a white spinner; a delivered transcript shows a checkmark on the idle capsule for about a second. An error is the only text the strip ever shows: one short red line between the dismiss glyph and the capsule that fades out after about 3 seconds, with the capsule back at idle. Distinct from the host app's orange mic indicator during a keyboard warm session.
+On the Codictate keyboard extension, the Dictate button is a small capsule (`DictatePill`) at the right of a quiet 44 pt strip above the keys, with the dismiss glyph and the Keyboard model panel's chip at the strip's left. It carries no text: each phase has a fill and a glyph. **Idle** is a key-colored capsule (white in light mode, the dark key grey in dark mode, with the keys' shadow) and a mic; while Parakeet's first-time load runs (**preparing**) the mic dims beside a small spinner. **Recording** is red with five white level bars (they follow the audio on the In-keyboard path and breathe slowly on the Warm and Cold paths, where the keyboard hears nothing). **Transcribing** is orange with a white spinner; a delivered transcript shows a checkmark on the idle capsule for about a second. Besides the Keyboard model panel's chip, an error is the only text the strip ever shows: one short red line between the chip and the capsule that fades out after about 3 seconds, with the capsule back at idle. Distinct from the host app's orange mic indicator during a keyboard warm session.
+
+## Keyboard model panel
+
+The keyboard's way to change the Speech Model without opening Codictate. A quiet chip right
+of the dismiss glyph names the current Speech Model (its short name: "Parakeet", "Whisper
+base", "hviske") with a small up-down chevron; it dims while a Dictation turn runs. Tapping
+it swaps the keys for the panel at the same height: one row per installed Speech Model,
+dimmed with the reason ("Not for Danish") when its Language Lock rejects the stored
+Transcription Language, then S1-mini's switch when S1-mini is downloaded. Picking a row
+writes `preferredModelVariant` exactly as the app does and loads the new Speech Model for
+the next tap; the switch writes `formattingModel`. The app and a running Host pick up both
+changes (see AGENTS.md, Settings with two writers).
+_Avoid_: model picker, model menu.
 
 ## First-time Parakeet processing
 

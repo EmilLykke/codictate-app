@@ -22,6 +22,12 @@ protocol DictationKeyboardViewDelegate: AnyObject {
     /// Backspace held for a while: delete the word before the cursor.
     func didDeleteWordBackward()
     func didTapDismiss()
+    /// The model panel is opening: what it lists now.
+    func speechModelPanelContent() -> SpeechModelPanelContent
+    /// A Speech Model row was picked (the current one included); the panel has closed.
+    func didSelectSpeechModel(_ id: String)
+    /// S1-mini's switch in the model panel.
+    func didToggleFormatting(_ isOn: Bool)
 }
 
 // MARK: - KeyboardKey
@@ -225,8 +231,8 @@ final class DictationKeyboardView: UIView {
     private enum Metrics {
         /// Strip (44) + gap (4) + four 42 pt rows with 10 pt gaps (198) + bottom inset (4).
         static let height: CGFloat = 250
-        /// The strip above the keys: dismiss at the left, Dictate at the right, error text
-        /// between them only when there is one. No fill of its own.
+        /// The strip above the keys: dismiss and the model chip at the left, Dictate at the
+        /// right, error text between them only when there is one. No fill of its own.
         static let stripHeight: CGFloat = 44
         static let stripGap: CGFloat = 4
         static let sideInset: CGFloat = 3
@@ -259,6 +265,15 @@ final class DictationKeyboardView: UIView {
 
     private let pill = DictatePill()
     private let dismissKey = KeyboardKey(style: .toolbar)
+    /// The Speech Model's name; opens the model panel. Hidden when the keyboard cannot read
+    /// the App Group (no Full Access).
+    private let modelChip = SpeechModelChip()
+    /// Replaces the key area, at its height, while open.
+    private let modelPanel = SpeechModelPanel()
+    private var panelAnimator: UIViewPropertyAnimator?
+    private(set) var isModelPanelOpen = false
+    private var errorAfterChip: NSLayoutConstraint!
+    private var errorAfterDismiss: NSLayoutConstraint!
     /// The only text in the strip, and only for errors.
     private let errorLabel = UILabel()
     private var errorGeneration = 0
@@ -323,6 +338,7 @@ final class DictationKeyboardView: UIView {
         if window == nil {
             stopDeleteRepeat()
             hidePreview()
+            closeModelPanel(animated: false)
         }
     }
 
@@ -336,6 +352,14 @@ final class DictationKeyboardView: UIView {
         } else {
             pill.processingDetail = nil
         }
+        // The Speech Model stays put while a turn uses it.
+        let turnRunning: Bool
+        switch newState {
+        case .recording, .processing: turnRunning = true
+        default: turnRunning = false
+        }
+        modelChip.isEnabled = !turnRunning
+        if turnRunning { closeModelPanel(animated: true) }
         switch newState {
         case .idle, .error:
             pill.setMode(.idle)
@@ -379,6 +403,99 @@ final class DictationKeyboardView: UIView {
     func setReturnKeyTitle(_ title: String) {
         guard returnKey.label.text != title else { return }
         returnKey.setTitle(title, size: 16)
+    }
+
+    // MARK: Model chip and panel
+
+    /// The chip's Speech Model name, cross-faded when it changes; nil hides the chip.
+    func setSpeechModelName(_ name: String?, animated: Bool) {
+        guard let name else {
+            closeModelPanel(animated: false)
+            modelChip.isHidden = true
+            errorAfterChip.isActive = false
+            errorAfterDismiss.isActive = true
+            return
+        }
+        modelChip.setName(name, animated: animated && !modelChip.isHidden)
+        guard modelChip.isHidden else { return }
+        modelChip.isHidden = false
+        errorAfterDismiss.isActive = false
+        errorAfterChip.isActive = true
+    }
+
+    func closeModelPanel(animated: Bool) {
+        setModelPanelOpen(false, animated: animated)
+    }
+
+    private func openModelPanel() {
+        guard let content = delegate?.speechModelPanelContent() else { return }
+        modelPanel.setContent(content)
+        setModelPanelOpen(true, animated: true)
+        modelPanel.scrollToCurrent()
+    }
+
+    /// Cross-fades the panel and the keys. Interruptible: a new direction starts from what is
+    /// on screen. Reduce Motion fades only.
+    private func setModelPanelOpen(_ open: Bool, animated: Bool) {
+        guard open != isModelPanelOpen else { return }
+        isModelPanelOpen = open
+        modelChip.setOpen(open, animated: animated)
+        dismissKey.accessibilityLabel = open ? "Close speech models" : "Hide keyboard"
+        stopDeleteRepeat()
+        hidePreview()
+
+        // Stopping without finishing leaves every property where it is on screen.
+        panelAnimator?.stopAnimation(true)
+        panelAnimator = nil
+        keyArea.isHidden = false
+        modelPanel.isHidden = false
+        keyArea.isUserInteractionEnabled = !open
+        modelPanel.isUserInteractionEnabled = open
+
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+        let finish: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.keyArea.isHidden = open
+            self.modelPanel.isHidden = !open
+            self.modelPanel.transform = .identity
+            UIAccessibility.post(
+                notification: .layoutChanged,
+                argument: open ? self.modelPanel.firstAccessibleElement : self.modelChip
+            )
+        }
+        guard animated, window != nil else {
+            modelPanel.alpha = open ? 1 : 0
+            keyArea.alpha = open ? 0 : 1
+            finish()
+            return
+        }
+
+        let animator: UIViewPropertyAnimator
+        if open {
+            // Only a fully faded panel starts low; one caught leaving rises from where it is.
+            if (modelPanel.layer.presentation()?.opacity ?? Float(modelPanel.alpha)) < 0.01 {
+                modelPanel.transform = reduceMotion
+                    ? .identity : CGAffineTransform(translationX: 0, y: KeyboardMotion.panelInOffset)
+            }
+            animator = KeyboardMotion.panelInAnimator {
+                self.modelPanel.alpha = 1
+                self.modelPanel.transform = .identity
+                self.keyArea.alpha = 0
+            }
+        } else {
+            animator = KeyboardMotion.panelOutAnimator {
+                self.modelPanel.alpha = 0
+                self.modelPanel.transform = reduceMotion
+                    ? .identity : CGAffineTransform(translationX: 0, y: KeyboardMotion.panelOutOffset)
+                self.keyArea.alpha = 1
+            }
+        }
+        animator.addCompletion { position in
+            guard position == .end else { return }
+            finish()
+        }
+        animator.startAnimation()
+        panelAnimator = animator
     }
 
     // MARK: Error text
@@ -431,6 +548,10 @@ final class DictationKeyboardView: UIView {
         dismissKey.addTarget(self, action: #selector(dismissTapped), for: .touchUpInside)
         addSubview(dismissKey)
 
+        modelChip.isHidden = true
+        modelChip.addTarget(self, action: #selector(modelChipTapped), for: .touchUpInside)
+        addSubview(modelChip)
+
         pill.translatesAutoresizingMaskIntoConstraints = false
         pill.addTarget(self, action: #selector(dictateTapped), for: .touchUpInside)
         addSubview(pill)
@@ -441,6 +562,19 @@ final class DictationKeyboardView: UIView {
             return (self.pageKeys[self.page] ?? []) + self.bottomRowKeys
         }
         addSubview(keyArea)
+
+        modelPanel.translatesAutoresizingMaskIntoConstraints = false
+        modelPanel.alpha = 0
+        modelPanel.isHidden = true
+        modelPanel.onSelect = { [weak self] id in
+            guard let self else { return }
+            self.closeModelPanel(animated: true)
+            self.delegate?.didSelectSpeechModel(id)
+        }
+        modelPanel.onFormattingChange = { [weak self] isOn in
+            self?.delegate?.didToggleFormatting(isOn)
+        }
+        addSubview(modelPanel)
 
         errorLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
         errorLabel.textColor = .systemRed
@@ -504,6 +638,11 @@ final class DictationKeyboardView: UIView {
 
         NSLayoutConstraint.activate(deferredConstraints)
         deferredConstraints = []
+        // The error text sits between the chip and the capsule, or after the dismiss glyph
+        // when there is no chip.
+        errorAfterChip = errorLabel.leadingAnchor.constraint(equalTo: modelChip.trailingAnchor, constant: 4)
+        errorAfterDismiss = errorLabel.leadingAnchor.constraint(equalTo: dismissKey.trailingAnchor, constant: 4)
+        errorAfterDismiss.isActive = true
         NSLayoutConstraint.activate([
             // Dictate: a small capsule at the strip's right, inset a little more than the keys
             // so it clears the keyboard's rounded top corner.
@@ -517,9 +656,18 @@ final class DictationKeyboardView: UIView {
             dismissKey.widthAnchor.constraint(equalToConstant: 44),
             dismissKey.heightAnchor.constraint(equalToConstant: Metrics.stripHeight),
 
+            modelChip.leadingAnchor.constraint(equalTo: dismissKey.trailingAnchor),
+            modelChip.topAnchor.constraint(equalTo: topAnchor),
+            modelChip.heightAnchor.constraint(equalToConstant: Metrics.stripHeight),
+            modelChip.trailingAnchor.constraint(lessThanOrEqualTo: pill.leadingAnchor, constant: -12),
+
             errorLabel.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
-            errorLabel.leadingAnchor.constraint(equalTo: dismissKey.trailingAnchor, constant: 4),
             errorLabel.trailingAnchor.constraint(equalTo: pill.leadingAnchor, constant: -12),
+
+            modelPanel.topAnchor.constraint(equalTo: keyArea.topAnchor),
+            modelPanel.leadingAnchor.constraint(equalTo: keyArea.leadingAnchor),
+            modelPanel.trailingAnchor.constraint(equalTo: keyArea.trailingAnchor),
+            modelPanel.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
 
             // The key area starts at the strip's bottom so near-misses above the top row snap to it.
             keyArea.topAnchor.constraint(equalTo: topAnchor, constant: Metrics.stripHeight),
@@ -803,5 +951,20 @@ final class DictationKeyboardView: UIView {
 
     @objc private func returnTapped() { delegate?.didInsertText("\n") }
     @objc private func dictateTapped() { delegate?.didTapDictate() }
-    @objc private func dismissTapped() { delegate?.didTapDismiss() }
+    @objc private func dismissTapped() {
+        // While the model panel is open, the dismiss glyph closes it instead.
+        if isModelPanelOpen {
+            closeModelPanel(animated: true)
+            return
+        }
+        delegate?.didTapDismiss()
+    }
+
+    @objc private func modelChipTapped() {
+        if isModelPanelOpen {
+            closeModelPanel(animated: true)
+        } else {
+            openModelPanel()
+        }
+    }
 }

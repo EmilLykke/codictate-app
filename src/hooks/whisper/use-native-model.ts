@@ -1,10 +1,12 @@
 import { useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppState } from 'react-native'
 import {
   ensureModel,
   getPreferredModel,
   isModelReady,
   onModelProgress,
+  onPreferredModelChange,
   type ModelVariant,
 } from 'codictate-dictation'
 
@@ -55,6 +57,19 @@ export function useNativeModel(): NativeModelState {
       run()
     }, [run])
   )
+
+  // The keyboard's model switcher can change the Speech Model while this screen
+  // stays focused; the Host reports it, and foregrounding covers a suspended app.
+  useEffect(() => {
+    const changeSub = onPreferredModelChange(run)
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') run()
+    })
+    return () => {
+      changeSub.remove()
+      appStateSub.remove()
+    }
+  }, [run])
 
   useEffect(() => {
     const sub = onModelProgress((e) => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert } from 'react-native'
+import { Alert, AppState } from 'react-native'
 import * as Haptics from 'expo-haptics'
 import {
   deleteModel,
@@ -8,6 +8,7 @@ import {
   listModels,
   onModelDownloadEnded,
   onModelProgress,
+  onPreferredModelChange,
   setPreferredModel,
   type ModelInfo,
   type ModelVariant,
@@ -46,8 +47,19 @@ export function useModelManagement() {
     }
   }, [refresh])
 
+  // The keyboard's model switcher writes the Speech Model too: re-read it when the
+  // Host reports the change, and on every foreground, because a suspended app misses
+  // that report.
   useEffect(() => {
     refresh()
+    const changeSub = onPreferredModelChange(refresh)
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') refresh()
+    })
+    return () => {
+      changeSub.remove()
+      appStateSub.remove()
+    }
   }, [refresh])
 
   const clearDownloadProgress = (variant: ModelVariant) => {

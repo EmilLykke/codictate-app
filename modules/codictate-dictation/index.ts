@@ -33,6 +33,7 @@ export type ErrorEvent = { message: string };
 export type ModelVariant = "parakeet" | "base" | "base_en" | "hviske" | "ekko";
 export type ModelProgressEvent = { variant: ModelVariant; progress: number };
 export type ModelDownloadEndedEvent = { variant: ModelVariant };
+export type PreferredModelChangeEvent = { variant: string };
 export type ModelInfo = { variant: ModelVariant; ready: boolean; size: number };
 
 export type FormattingModel = "off" | "s1-mini";
@@ -43,6 +44,7 @@ export type FormattingStyle =
   | "formal";
 export type FormattingContext = "general" | "email";
 export type FormattingModelProgressEvent = { progress: number };
+export type FormattingSettingsChangeEvent = { model: FormattingModel };
 export type ParakeetPreparingEvent = { preparing: boolean };
 export type FormattingModelStatus = {
   ready: boolean;
@@ -77,6 +79,8 @@ type CodictateDictationEvents = {
   onModelDownloadEnded: (event: ModelDownloadEndedEvent) => void;
   onFormattingModelProgress: (event: FormattingModelProgressEvent) => void;
   onFormattingModelStatus: (event: FormattingModelStatus) => void;
+  onPreferredModelChange: (event: PreferredModelChangeEvent) => void;
+  onFormattingSettingsChange: (event: FormattingSettingsChangeEvent) => void;
   onParakeetPreparing: (event: ParakeetPreparingEvent) => void;
   "codictate.readiness.changed": (event: DictationReadiness) => void;
 };
@@ -171,6 +175,27 @@ export function onModelDownloadEnded(
   listener: (event: ModelDownloadEndedEvent) => void,
 ): EventSubscription {
   return Native.addListener("onModelDownloadEnded", listener);
+}
+
+/**
+ * The Speech Model changed outside JS: the keyboard's model switcher wrote it while
+ * the Host was running. Re-read it with `getPreferredModel`. A suspended app misses
+ * this, so callers also re-read on foreground.
+ */
+export function onPreferredModelChange(
+  listener: (event: PreferredModelChangeEvent) => void,
+): EventSubscription {
+  return Native.addListener("onPreferredModelChange", listener);
+}
+
+/**
+ * A formatting setting changed in the App Group: from JS or from the keyboard's
+ * S1-mini switch. Re-read the settings.
+ */
+export function onFormattingSettingsChange(
+  listener: (event: FormattingSettingsChangeEvent) => void,
+): EventSubscription {
+  return Native.addListener("onFormattingSettingsChange", listener);
 }
 
 export function onFormattingModelProgress(

@@ -41,6 +41,8 @@ Plugin order matters: Expo runs mods in reverse registration order, so inner wra
 
 Engine selection is stored in UserDefaults under `preferredModelVariant` (App Group). Default is `parakeet`. The `TranscriptionRouter` class in `KeyboardHostRecorder.swift` reads this preference and dispatches to the correct engine.
 
+**Settings with two writers.** `preferredModelVariant` and `formattingModel` (`"s1-mini"` or `"off"`) are written by the Expo module (`setPreferredModel`, `setFormattingModel`) and by the keyboard's model panel (`SpeechModelSwitcher.swift`, wired in `KeyboardViewController`), which writes the same values and leaves `formattingStyle` and `formattingContext` alone. After its write the keyboard posts the Darwin notification `app.codictate.keyboard.speechModelChanged` or `app.codictate.keyboard.formattingChanged`. A running Host (`KeyboardHostRecorder.installNotificationObservers`) republishes Dictation Readiness and posts `codictate.speechModel.changed`, or posts `codictate.formatting.settingsChanged` (`FormattingManager` frees S1-mini when it is off); the Expo module forwards them to JS as `onPreferredModelChange` and `onFormattingSettingsChange`. A suspended Host misses the Darwin notification, so the JS hooks that show either setting (`use-model-management`, `use-native-model`, `use-formatting-settings`) also re-read on every foreground. Anything new that reads these settings in JS must do the same.
+
 ## Speech Models
 
 | Variant | Engine | Storage | Size | Hardware |

@@ -6,6 +6,9 @@ enum FormattingModelNotification {
     static let progress = Notification.Name("codictate.formatting.progress")
     static let ready = Notification.Name("codictate.formatting.ready")
     static let failed = Notification.Name("codictate.formatting.failed")
+    /// A formatting setting changed in the App Group (React Native or the keyboard). The Expo
+    /// module forwards it to React Native as `onFormattingSettingsChange`.
+    static let settingsChanged = Notification.Name("codictate.formatting.settingsChanged")
 }
 
 final class FormattingManager {
@@ -30,7 +33,7 @@ final class FormattingManager {
             forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.bridge.unloadModel() }
         NotificationCenter.default.addObserver(
-            forName: Notification.Name("codictate.formatting.settingsChanged"), object: nil, queue: .main
+            forName: FormattingModelNotification.settingsChanged, object: nil, queue: .main
         ) { [weak self] _ in
             guard let suite = UserDefaults(suiteName: self?.groupID ?? ""),
                   (suite.string(forKey: FormattingConfiguration.modelKey) ?? "off") == "off"

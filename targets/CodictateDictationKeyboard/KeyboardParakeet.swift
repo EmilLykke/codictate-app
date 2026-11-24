@@ -59,6 +59,8 @@ final class KeyboardParakeet {
     private(set) var isSetAside = false
     private var memoryWarnedAt: Date?
     private var isTranscribing = false
+    /// Another Speech Model was selected while a load ran: the load is dropped when it lands.
+    private var discardsLoadInFlight = false
     private var releasesAfterTranscription = false
 
     /// True from an In-keyboard turn's tap to its end: a memory warning meanwhile releases
@@ -94,6 +96,7 @@ final class KeyboardParakeet {
     /// Returns whether it is now loaded or loading. Main thread only.
     @discardableResult
     func warmUp() -> Bool {
+        discardsLoadInFlight = false
         if isLoaded || isLoading { return true }
         if let reason = loadBlockedReason() {
             AppGroupLog.write("[Keyboard] Parakeet not loaded: \(reason)")
@@ -115,6 +118,12 @@ final class KeyboardParakeet {
                 let seconds = Date().timeIntervalSince(started)
                 guard let self else { return nil }
                 self.loadTask = nil
+                if self.discardsLoadInFlight {
+                    self.discardsLoadInFlight = false
+                    await manager.cleanup()
+                    AppGroupLog.write("[Keyboard] Parakeet load discarded: another Speech Model was selected")
+                    return nil
+                }
                 guard onEngine else {
                     await manager.cleanup()
                     self.setAside("not on the Neural Engine \(Self.memory())")
@@ -189,6 +198,18 @@ final class KeyboardParakeet {
         guard releasesAfterTranscription, !isTranscribing, !isHeldForTurn else { return }
         releasesAfterTranscription = false
         release(reason: "memory warning")
+    }
+
+    /// Another Speech Model was selected in the keyboard: the model goes now (or once a turn
+    /// using it ends), and a load in flight is dropped when it lands.
+    func releaseForOtherSpeechModel() {
+        if isLoading { discardsLoadInFlight = true }
+        guard manager != nil else { return }
+        if isTranscribing || isHeldForTurn {
+            releasesAfterTranscription = true
+        } else {
+            release(reason: "another Speech Model selected")
+        }
     }
 
     /// The In-keyboard path is off for the rest of this process.

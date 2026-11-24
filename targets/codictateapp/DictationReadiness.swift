@@ -11,6 +11,13 @@ enum DictationReadinessNotification {
     static let changed = Notification.Name("codictate.readiness.changed")
 }
 
+/// The selected Speech Model changed outside React Native (the keyboard's model switcher).
+/// userInfo `["variant": String]`. The Expo module forwards it to React Native as
+/// `onPreferredModelChange`.
+enum SpeechModelSelectionNotification {
+    static let changed = Notification.Name("codictate.speechModel.changed")
+}
+
 /// Resolves Dictation Readiness from (selected Speech Model, stored Transcription
 /// Language, weights on disk, download in flight, microphone permission) and publishes
 /// the result to the App Group.

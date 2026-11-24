@@ -52,6 +52,7 @@ const EXTENSION_SOURCES = [
   "KeyboardParakeet.swift",
   "KeyboardDictationAUClient.swift",
   "DictatePill.swift",
+  "SpeechModelSwitcher.swift",
 ];
 
 /** Dropped from the extension's Sources phase when a legacy layout still compiles them there. */

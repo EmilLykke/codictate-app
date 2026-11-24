@@ -522,6 +522,9 @@ private let kbdDarwinStartName    = "app.codictate.dictation.keyboard.start"
 private let kbdDarwinStopName     = "app.codictate.dictation.keyboard.stop"
 private let intentDarwinStartName = "app.codictate.dictation.intent.start"
 private let intentDarwinStopName  = "app.codictate.dictation.intent.stop"
+/// The keyboard's model panel wrote `preferredModelVariant` or `formattingModel`.
+private let kbdDarwinSpeechModelChangedName = "app.codictate.keyboard.speechModelChanged"
+private let kbdDarwinFormattingChangedName  = "app.codictate.keyboard.formattingChanged"
 
 // C-compatible callback. Relays Darwin notification name to NSNotificationCenter on the main thread.
 // Must be file-scope (not a method) because CFNotificationCallback is a C function pointer.
@@ -768,6 +771,44 @@ final class KeyboardHostRecorder: NSObject {
                 name: NSNotification.Name(stopName), object: nil
             )
         }
+        // The keyboard's model panel changes settings the Host and React Native read.
+        for (name, selector) in [
+            (kbdDarwinSpeechModelChangedName, #selector(handleKeyboardSpeechModelChanged)),
+            (kbdDarwinFormattingChangedName, #selector(handleKeyboardFormattingChanged)),
+        ] {
+            CFNotificationCenterAddObserver(
+                darwinCenter, selfPtr, kbdDarwinCallback,
+                name as CFString, nil, .deliverImmediately
+            )
+            NotificationCenter.default.addObserver(
+                self, selector: selector, name: NSNotification.Name(name), object: nil
+            )
+        }
+    }
+
+    /// The keyboard switched the Speech Model: Dictation Readiness is re-resolved for it, and
+    /// React Native re-reads its selection (`SpeechModelSelectionNotification.changed`). A
+    /// suspended Host misses this; it re-resolves when it becomes active and React Native
+    /// re-reads on foreground.
+    @objc private func handleKeyboardSpeechModelChanged() {
+        let suite = UserDefaults(suiteName: KeyboardDictationBridge.suiteName)
+        suite?.synchronize()
+        let variant = suite?.string(forKey: KeyboardDictationBridge.preferredVariantKey)
+            ?? ModelManager.Variant.base.rawValue
+        NSLog("[KeyboardHost] Keyboard switched the Speech Model to \(variant)")
+        DictationReadiness.shared.publish()
+        NotificationCenter.default.post(
+            name: SpeechModelSelectionNotification.changed, object: nil, userInfo: ["variant": variant]
+        )
+    }
+
+    /// The keyboard turned S1-mini on or off. Posts what the Expo module posts when React
+    /// Native changes it, so `FormattingManager` frees S1-mini when it is off and React
+    /// Native re-reads the setting.
+    @objc private func handleKeyboardFormattingChanged() {
+        UserDefaults(suiteName: KeyboardDictationBridge.suiteName)?.synchronize()
+        NSLog("[KeyboardHost] Keyboard changed the Formatting Model")
+        NotificationCenter.default.post(name: FormattingModelNotification.settingsChanged, object: nil)
     }
 
     @objc private func handleStartNotification(_ note: Notification) {

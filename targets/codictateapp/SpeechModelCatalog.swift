@@ -56,6 +56,18 @@ enum SpeechModelCatalog {
             }
         }
 
+        /// The short name the keyboard's model switcher shows. Model names keep their own
+        /// spelling and casing.
+        var shortName: String {
+            switch self {
+            case .parakeet: return "Parakeet"
+            case .base: return "Whisper base"
+            case .baseEn: return "Whisper base.en"
+            case .hviske: return "hviske"
+            case .ekko: return "ekko"
+            }
+        }
+
         /// Language Lock: the Transcription Languages this Speech Model accepts.
         /// `nil` means the full picker. Feeding a Speech Model a language it does not
         /// support yields a fluent wrong-language transcript and never an error, which

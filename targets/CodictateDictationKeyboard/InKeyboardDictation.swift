@@ -163,12 +163,19 @@ final class InKeyboardDictation {
     /// The blocked reason in the Host's published `dictationReadiness` JSON, or nil when it
     /// is runnable or was never published. The Host re-resolves it whenever the Speech Model
     /// or the Transcription Language changes.
+    ///
+    /// A Language Lock conflict or missing weights describe the Speech Model the Host last
+    /// saw, which is stale after a switch in the keyboard while the Host is not running.
+    /// `eligibility` checks both itself for the selected Speech Model, so only the other
+    /// reasons count here.
     private static func publishedReadinessBlock(suite: UserDefaults) -> String? {
         guard let data = suite.data(forKey: KbdSuite.dictationReadinessKey),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               object["blocked"] as? Bool == true
         else { return nil }
-        return object["reason"] as? String ?? "blocked"
+        let reason = object["reason"] as? String ?? "blocked"
+        guard !["languageUnsupportedByModel", "weightsMissing"].contains(reason) else { return nil }
+        return reason
     }
 
     // MARK: - Lifecycle

@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router'
 import * as Haptics from 'expo-haptics'
 import { useCallback, useEffect, useState } from 'react'
-import { Alert } from 'react-native'
+import { Alert, AppState } from 'react-native'
 import {
   deleteFormattingModel,
   ensureFormattingModel,
@@ -11,6 +11,7 @@ import {
   getFormattingStyle,
   onFormattingModelProgress,
   onFormattingModelStatus,
+  onFormattingSettingsChange,
   setFormattingContext,
   setFormattingModel,
   setFormattingStyle,
@@ -34,11 +35,25 @@ export function useFormattingSettings() {
     setContextState(getFormattingContext())
     void getFormattingModelStatus().then((next) => {
       setStatus(next)
-      setDownloadProgress(next.downloading ? 0 : null)
+      // A download in flight keeps the progress it last reported.
+      setDownloadProgress((prev) => (next.downloading ? (prev ?? 0) : null))
     })
   }, [])
 
   useFocusEffect(refresh)
+
+  // The keyboard's S1-mini switch writes the Formatting Model too: re-read when the
+  // Host reports a change, and on every foreground, because a suspended app misses it.
+  useEffect(() => {
+    const changeSub = onFormattingSettingsChange(refresh)
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') refresh()
+    })
+    return () => {
+      changeSub.remove()
+      appStateSub.remove()
+    }
+  }, [refresh])
 
   useEffect(() => {
     const progressSubscription = onFormattingModelProgress(({ progress }) => {

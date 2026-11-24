@@ -25,7 +25,9 @@ enum DictationAUContract {
 
     enum Command: String {
         /// Loads S1-mini if it is selected, ready and not loaded, and with `variant` (any
-        /// Speech Model but `parakeet`) that Speech Model too. Answers `accepted`.
+        /// Speech Model but `parakeet`) that Speech Model too. Frees S1-mini when it is no
+        /// longer selected, and with `variant` `parakeet` the loaded Speech Model (the
+        /// keyboard's model switcher). Answers `accepted`.
         case prewarm
         /// Starts formatting `text` (with `requestID`, `languageId`, `style`, `context`).
         /// For the In-keyboard path's Parakeet turns. Answers `accepted`.

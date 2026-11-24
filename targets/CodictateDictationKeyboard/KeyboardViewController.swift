@@ -13,7 +13,8 @@ enum KbdSuite {
     static let warmSessionExpiryKey = "kbdWarmSessionExpiry"
     static let warmSessionActiveKey = "kbdWarmSessionActive"
     static let processingMessageKey = "kbdProcessingMessage"
-    /// Read for the In-keyboard path's eligibility; the Host and JS write them.
+    /// Read for the In-keyboard path's eligibility. The Host and JS write them; the keyboard's
+    /// model switcher writes `preferredModelVariant` too.
     static let preferredVariantKey = "preferredModelVariant"
     static let transcriptionLanguageKey = "transcriptionLanguageId"
     static let parakeetModelReadyKey = "parakeetModelReady"
@@ -21,7 +22,8 @@ enum KbdSuite {
     /// Dictation Readiness JSON the Host publishes (`KeyboardDictationBridge.dictationReadinessKey`).
     static let dictationReadinessKey = "dictationReadiness"
     /// Read to route an In-keyboard transcript through the Dictation AU; the Host and JS
-    /// write them (`FormattingConfiguration`).
+    /// write them (`FormattingConfiguration`), and the model panel's S1-mini switch writes
+    /// `formattingModel` ("s1-mini" or "off").
     static let formattingModelKey = "formattingModel"
     static let formattingStyleKey = "formattingStyle"
     static let formattingContextKey = "formattingContext"
@@ -40,6 +42,10 @@ enum KbdSuite {
 
 private let kbdDarwinStartName = "app.codictate.dictation.keyboard.start"
 private let intentDarwinStopName = "app.codictate.dictation.intent.stop"
+/// The keyboard changed a setting in the App Group; a running Host republishes Dictation
+/// Readiness and tells React Native (`KeyboardHostRecorder.installNotificationObservers`).
+private let speechModelChangedDarwinName = "app.codictate.keyboard.speechModelChanged"
+private let formattingChangedDarwinName = "app.codictate.keyboard.formattingChanged"
 
 /// The keyboard's root view. Adopting `UIInputViewAudioFeedback` lets
 /// `UIDevice.playInputClick()` play the system key click (when the user has Keyboard Clicks on).
@@ -70,6 +76,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     /// Haptics need Full Access, which the keyboard has for dictation; without it they stay silent.
     private let startHaptic = UIImpactFeedbackGenerator(style: .light)
     private let stopHaptic = UIImpactFeedbackGenerator(style: .soft)
+    private let selectionHaptic = UISelectionFeedbackGenerator()
 
     private var viewState: DictationViewState = .idle {
         didSet {
@@ -185,6 +192,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         startPhasePolling()
         refreshTextTraits()
         parakeetLoadingChanged()
+        // The app may have changed the Speech Model while the keyboard was away.
+        refreshSpeechModelChip(animated: false)
     }
 
     /// After the first frame: preloads the In-keyboard path's capture page (and Parakeet when
@@ -205,6 +214,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         stopStartFallback()
         stopPhasePolling()
         stopResultPolling()
+        keyboardView.closeModelPanel(animated: false)
         preparingRevealTimer?.invalidate()
         preparingRevealTimer = nil
         // The microphone must never outlive the keyboard; a turn cut short is discarded.
@@ -289,6 +299,119 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
 
     func didTapDismiss() {
         dismissKeyboard()
+    }
+
+    // MARK: Speech Model switcher
+
+    /// The chip names the selected Speech Model. Without Full Access the keyboard can neither
+    /// read nor write the App Group, so there is nothing to switch and no chip.
+    private func refreshSpeechModelChip(animated: Bool) {
+        guard hasFullAccess, let suite, SpeechModelCatalog.containerURL != nil else {
+            keyboardView.setSpeechModelName(nil, animated: false)
+            return
+        }
+        suite.synchronize()
+        let variant = InKeyboardDictation.selectedVariant(suite: suite)
+        keyboardView.setSpeechModelName(variant?.shortName, animated: animated)
+    }
+
+    /// Every installed Speech Model (the files the In-keyboard path checks), dimmed when its
+    /// Language Lock rejects the stored Transcription Language, and S1-mini's switch when it
+    /// is downloaded.
+    func speechModelPanelContent() -> SpeechModelPanelContent {
+        guard let suite else { return SpeechModelPanelContent(models: [], formattingIsOn: nil) }
+        suite.synchronize()
+        typealias Variant = SpeechModelCatalog.Variant
+        let current = InKeyboardDictation.selectedVariant(suite: suite)
+        let languageId = suite.string(forKey: KbdSuite.transcriptionLanguageKey) ?? Variant.automaticLanguageId
+        let models = Variant.all.filter { variant in
+            variant == .parakeet
+                ? KeyboardParakeet.modelIsReady(suite: suite)
+                : SpeechModelCatalog.filesAreInstalled(for: variant)
+        }.map { variant in
+            let accepts = variant.accepts(languageId: languageId)
+            return SpeechModelOption(
+                id: variant.rawValue,
+                name: variant.shortName,
+                hint: accepts ? Self.languageHint(variant) : "Not for \(Self.languageName(languageId))",
+                isAvailable: accepts,
+                isCurrent: variant == current
+            )
+        }
+        let formattingIsOn: Bool? = KeyboardDictationAUClient.s1MiniIsInstalled(suite: suite)
+            ? suite.string(forKey: KbdSuite.formattingModelKey) == "s1-mini"
+            : nil
+        return SpeechModelPanelContent(models: models, formattingIsOn: formattingIsOn)
+    }
+
+    /// Writes the choice where the app writes it (`setPreferredModel`), tells a running Host,
+    /// and gets the new Speech Model ready for the next tap.
+    func didSelectSpeechModel(_ id: String) {
+        guard let suite, let variant = SpeechModelCatalog.Variant(rawValue: id), !inKeyboard.isActive else { return }
+        let previous = InKeyboardDictation.selectedVariant(suite: suite)
+        guard variant != previous else { return }
+        suite.set(variant.rawValue, forKey: KbdSuite.preferredVariantKey)
+        CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
+        suite.synchronize()
+        selectionHaptic.selectionChanged()
+        keyboardView.setSpeechModelName(variant.shortName, animated: true)
+        postDarwinNotification(speechModelChangedDarwinName)
+        AppGroupLog.write("[Keyboard] Speech Model switched in the keyboard: \(previous?.rawValue ?? "none") -> \(variant.rawValue)")
+        prepareSpeechModel(variant, replacing: previous)
+    }
+
+    /// Frees what the previous Speech Model held and loads the new one, as the keyboard's
+    /// appearance and a turn's start would.
+    private func prepareSpeechModel(_ variant: SpeechModelCatalog.Variant, replacing previous: SpeechModelCatalog.Variant?) {
+        if previous == .parakeet {
+            KeyboardParakeet.shared.releaseForOtherSpeechModel()
+        }
+        let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false)
+        AppGroupLog.write("[Keyboard] In-keyboard path after the switch: \(verdict.reason)")
+        if variant == .parakeet {
+            // The Dictation AU holds one Speech Model, which Parakeet turns never use.
+            KeyboardDictationAUClient.shared.prewarmIfRunning(variant: variant.rawValue)
+        }
+        guard verdict.eligible else { return }
+        // Loads Parakeet when it is the Speech Model; every other one loads in the AU.
+        inKeyboard.prepare(in: view)
+        if variant != .parakeet {
+            KeyboardDictationAUClient.shared.prewarm(variant: variant.rawValue)
+        }
+    }
+
+    /// S1-mini on or off, written as the app writes it (`setFormattingModel`); style and
+    /// context stay as they are. The Dictation AU loads or frees it to match.
+    func didToggleFormatting(_ isOn: Bool) {
+        guard let suite else { return }
+        suite.set(isOn ? "s1-mini" : "off", forKey: KbdSuite.formattingModelKey)
+        CFPreferencesAppSynchronize(KbdSuite.suiteName as CFString)
+        suite.synchronize()
+        selectionHaptic.selectionChanged()
+        postDarwinNotification(formattingChangedDarwinName)
+        AppGroupLog.write("[Keyboard] S1-mini turned \(isOn ? "on" : "off") in the keyboard")
+        let variant = InKeyboardDictation.selectedVariant(suite: suite)
+        let speechModel = variant == .parakeet ? nil : variant?.rawValue
+        guard isOn else {
+            KeyboardDictationAUClient.shared.prewarmIfRunning(variant: speechModel)
+            return
+        }
+        guard InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false).eligible else { return }
+        KeyboardDictationAUClient.shared.prewarm(variant: speechModel)
+    }
+
+    /// The Speech Model's languages, from its Language Lock.
+    private static func languageHint(_ variant: SpeechModelCatalog.Variant) -> String {
+        guard !variant.locksLanguageToAutomatic, let supported = variant.supportedLanguages else {
+            return "Many languages"
+        }
+        return supported.count == 1 ? languageName(supported[0]) : "\(supported.count) languages"
+    }
+
+    /// "Danish" for "da", in English like the rest of the keyboard.
+    private static func languageName(_ id: String) -> String {
+        let code = String(id.split(separator: "-").first ?? Substring(id))
+        return Locale(identifier: "en").localizedString(forLanguageCode: code) ?? id
     }
 
     // MARK: Text traits
