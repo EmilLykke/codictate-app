@@ -17,8 +17,7 @@ enum KbdSuite {
     static let preferredVariantKey = "preferredModelVariant"
     static let transcriptionLanguageKey = "transcriptionLanguageId"
     static let parakeetModelReadyKey = "parakeetModelReady"
-    static let formattingModelKey = "formattingModel"
-    static let s1MiniVerifiedKey = "s1MiniModelVerified"
+    static let hostMicrophoneGrantedKey = "hostMicrophoneGranted"
     static let sourceKeyboard   = "keyboard"
     static let sourceIntent     = "intent"
 

@@ -14,6 +14,8 @@ enum KeyboardDictationBridge {
     static let transcriptionLanguageKey = "transcriptionLanguageId"
     /// Dictation Readiness JSON published by the Host. The Host writes, JS reads.
     static let dictationReadinessKey = "dictationReadiness"
+    /// The Host's own reading of the microphone permission, for the keyboard (`DictationReadiness`).
+    static let hostMicrophoneGrantedKey = "hostMicrophoneGranted"
     static let phaseKey = "kbdDictationPhase"
     static let wavFileKey = "kbdDictationWavFile"
     static let errorKey = "kbdDictationHostError"

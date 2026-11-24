@@ -80,17 +80,18 @@ final class InKeyboardDictation {
         let language = suite.string(forKey: KbdSuite.transcriptionLanguageKey) ?? "auto"
         guard language == "auto" else { return (false, "Transcription Language is \(language)") }
         guard KeyboardParakeet.modelIsReady(suite: suite) else { return (false, "Parakeet not ready in the App Group") }
-        guard AVAudioApplication.shared.recordPermission == .granted else { return (false, "microphone not granted") }
+        // This process keeps the permission it read when it started, so the Host's own
+        // reading counts too (`DictationReadiness`). WebKit still checks when it opens the mic.
+        guard AVAudioApplication.shared.recordPermission == .granted
+                || suite.bool(forKey: KbdSuite.hostMicrophoneGrantedKey)
+        else { return (false, "microphone not granted") }
         guard KeyboardParakeet.deviceFits else { return (false, "no Neural Engine or under 5 GiB") }
-        // S1-mini cannot run in the keyboard, and dropping the user's formatting silently is
-        // worse than switching to the Host.
-        if suite.string(forKey: KbdSuite.formattingModelKey) == "s1-mini",
-           suite.bool(forKey: KbdSuite.s1MiniVerifiedKey) {
-            return (false, "S1-mini formatting is on")
-        }
+        // S1-mini does not block: it cannot run in the keyboard, so a warm Host (checked
+        // below) formats as before, and without one the keyboard inserts Parakeet's text.
         guard forTap else { return (true, "eligible") }
 
-        // A listening Host already records without a switch; two microphone owners would fight.
+        // A listening Host already records and formats without a switch; two microphone
+        // owners would fight.
         let now = Date().timeIntervalSince1970
         let warmExpiry = suite.double(forKey: KbdSuite.warmSessionExpiryKey)
         if suite.bool(forKey: KbdSuite.warmSessionActiveKey), warmExpiry > now {

@@ -136,6 +136,7 @@ final class DictationReadiness {
     /// `codictate.readiness.changed`. Returns the current answer either way.
     @discardableResult
     func publish() -> DictationReadinessState {
+        publishMicrophoneGrant()
         let state = currentState()
         guard state != published else { return state }
         published = state
@@ -201,6 +202,22 @@ final class DictationReadiness {
     }
 
     // MARK: - Private
+
+    /// The keyboard reads the microphone permission once when its process starts and iOS
+    /// does not update it there, so a keyboard opened before the grant (or one iOS keeps
+    /// alive) can read it as undetermined. The In-keyboard path also trusts the Host's word.
+    private func publishMicrophoneGrant() {
+        guard let suite = UserDefaults(suiteName: groupID) else { return }
+        let granted: Bool
+        if #available(iOS 17.0, *) {
+            granted = AVAudioApplication.shared.recordPermission == .granted
+        } else {
+            granted = AVAudioSession.sharedInstance().recordPermission == .granted
+        }
+        guard suite.object(forKey: KeyboardDictationBridge.hostMicrophoneGrantedKey) as? Bool != granted else { return }
+        suite.set(granted, forKey: KeyboardDictationBridge.hostMicrophoneGrantedKey)
+        suite.synchronize()
+    }
 
     /// Only a denied microphone blocks. Undetermined does not: the recording path prompts
     /// for it, and blocking would stop the prompt from ever appearing.
