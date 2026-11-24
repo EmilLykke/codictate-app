@@ -77,6 +77,8 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     private let startHaptic = UIImpactFeedbackGenerator(style: .light)
     private let stopHaptic = UIImpactFeedbackGenerator(style: .soft)
     private let selectionHaptic = UISelectionFeedbackGenerator()
+    /// The window whose system gesture recognizers last had their touch delays turned off.
+    private weak var gestureDelayWindow: UIWindow?
 
     private var viewState: DictationViewState = .idle {
         didSet {
@@ -155,6 +157,41 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
         keyboardView.setShowsInputModeKey(needsInputModeSwitchKey)
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // The keyboard can move to another window (rotation, a new host app) without a fresh
+        // viewDidAppear.
+        if let window = view.window, window !== gestureDelayWindow {
+            releaseSystemGestureDelays()
+        }
+    }
+
+    /// iOS holds back touchesBegan near the screen's edges while its edge gestures (on the
+    /// keyboard's window and the views above ours) decide whether the touch is theirs, so a
+    /// quick tap on a key or the strip near an edge can arrive late or not at all. Turning
+    /// the delays off delivers every touch at once; the recognizers stay installed and still
+    /// recognize their gestures.
+    private func releaseSystemGestureDelays() {
+        guard let window = view.window else { return }
+        gestureDelayWindow = window
+        var recognizers = window.gestureRecognizers ?? []
+        var ancestor = view.superview
+        while let current = ancestor, current !== window {
+            recognizers += current.gestureRecognizers ?? []
+            ancestor = current.superview
+        }
+        var changed = 0
+        for recognizer in recognizers where recognizer.delaysTouchesBegan || recognizer.delaysTouchesEnded {
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            changed += 1
+        }
+        guard changed > 0 else { return }
+        AppGroupLog.write(
+            "[Keyboard] Touch delays off on \(changed) of \(recognizers.count) system gesture recognizers"
+        )
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         if case .result = viewState { viewState = .idle }
@@ -200,6 +237,7 @@ final class KeyboardViewController: UIInputViewController, DictationKeyboardView
     /// it is the Speech Model), so a tap finds them ready.
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        releaseSystemGestureDelays()
         let verdict = InKeyboardDictation.eligibility(hasFullAccess: hasFullAccess, suite: suite, forTap: false)
         AppGroupLog.write("[Keyboard] In-keyboard path at appear: \(verdict.reason)")
         startHaptic.prepare()

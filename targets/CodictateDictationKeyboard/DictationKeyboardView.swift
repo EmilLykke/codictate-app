@@ -52,6 +52,9 @@ final class KeyboardKey: UIControl {
 
     /// Pressing shows the callout above the key rather than recoloring it.
     var showsPreview = false
+    /// Where touches land, in the key's coordinates (the dismiss glyph's strip area). Nil:
+    /// its bounds; the key area routes near-misses to letter keys itself.
+    var touchArea: CGRect?
     /// Shift while on or locked.
     var isEngaged = false {
         didSet {
@@ -126,11 +129,20 @@ final class KeyboardKey: UIControl {
         self.accessibilityLabel = accessibilityLabel
     }
 
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        touchArea?.contains(point) ?? super.point(inside: point, with: event)
+    }
+
     override var isHighlighted: Bool {
         didSet {
             guard isHighlighted != oldValue else { return }
             refresh()
         }
+    }
+
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
+        isHighlighted = false
     }
 
     private func refresh() {
@@ -193,29 +205,38 @@ private final class KeyPreview: UIView {
 
 // MARK: - KeyArea
 
-/// Holds the key rows. A touch in a gap between keys, or in the margin around them, goes to
-/// the nearest key, as on the system keyboard, so no tap lands on nothing.
+/// Holds the key rows, edge to edge and from the strip's bottom to the keyboard's. A touch
+/// anywhere in it that misses a key (a gap between keys, the margin at either side, the gap
+/// under the strip, the inset below the last row) goes to the nearest key, as on the system
+/// keyboard, so no tap in the key area lands on nothing.
 private final class KeyArea: UIView {
     var activeKeys: () -> [KeyboardKey] = { [] }
-    static let snapDistance: CGFloat = 12
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        // Hidden or fading out behind the model panel: never snap to a key nobody sees.
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, self.point(inside: point, with: event) else {
+            return nil
+        }
         let hit = super.hitTest(point, with: event)
         if hit is KeyboardKey { return hit }
-        guard self.point(inside: point, with: event) else { return hit }
+        return nearestKey(to: point) ?? hit
+    }
+
+    /// The visible key closest to `point` (in this view's coordinates), at any distance.
+    func nearestKey(to point: CGPoint) -> KeyboardKey? {
         var nearest: KeyboardKey?
-        var nearestDistance = Self.snapDistance * Self.snapDistance
-        for key in activeKeys() where key.window != nil && !key.isHidden {
+        var nearestDistance = CGFloat.greatestFiniteMagnitude
+        for key in activeKeys() where key.window != nil && !key.isHidden && key.isUserInteractionEnabled {
             let frame = key.convert(key.bounds, to: self)
             let dx = max(frame.minX - point.x, 0, point.x - frame.maxX)
             let dy = max(frame.minY - point.y, 0, point.y - frame.maxY)
             let distance = dx * dx + dy * dy
-            if distance <= nearestDistance {
+            if distance < nearestDistance {
                 nearest = key
                 nearestDistance = distance
             }
         }
-        return nearest ?? hit
+        return nearest
     }
 }
 
@@ -237,6 +258,15 @@ final class DictationKeyboardView: UIView {
         static let stripGap: CGFloat = 4
         static let sideInset: CGFloat = 3
         static let stripSideInset: CGFloat = 8
+        /// Strip touch areas: each control answers across the strip's full height. The dismiss
+        /// glyph's runs from the keyboard's left edge, the capsule's to its right edge, and the
+        /// chip's past its text and chevron by `chipTouchMargin` on each side. Where two want
+        /// the same points they split them at the middle.
+        static let dismissMinTouchWidth: CGFloat = 52
+        static let dictateMinTouchWidth: CGFloat = 80
+        static let chipTouchMargin: CGFloat = 10
+        /// An empty strip point this close above the key area goes to the nearest top-row key.
+        static let stripKeySnap: CGFloat = 8
         static let bottomInset: CGFloat = 4
         static let rowSpacing: CGFloat = 10
         /// Error text shows for this long, then fades.
@@ -333,6 +363,64 @@ final class DictationKeyboardView: UIView {
         CGSize(width: UIView.noIntrinsicMetric, height: Metrics.height)
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateStripTouchAreas()
+    }
+
+    /// A touch on empty strip just above the keys (no strip control there) goes to the
+    /// nearest top-row key, so the strip/keys boundary has no dead band either.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard hit === self, !isModelPanelOpen, keyArea.isUserInteractionEnabled, !keyArea.isHidden,
+              point.y < Metrics.stripHeight, point.y >= Metrics.stripHeight - Metrics.stripKeySnap else {
+            return hit
+        }
+        return keyArea.nearestKey(to: convert(point, to: keyArea)) ?? hit
+    }
+
+    /// Sets each strip control's touch area (see `Metrics.dismissMinTouchWidth`): full strip
+    /// height, out to the keyboard's edges, and split at the middle where two would overlap.
+    /// The visuals stay where they are.
+    private func updateStripTouchAreas() {
+        struct Span { var minX: CGFloat; var maxX: CGFloat }
+        func split(_ left: inout Span, _ right: inout Span) {
+            guard left.maxX > right.minX else { return }
+            let middle = (left.maxX + right.minX) / 2
+            left.maxX = middle
+            right.minX = middle
+        }
+        // Frames ignoring transforms: the capsule scales while pressed.
+        func layoutFrame(_ view: UIView) -> CGRect {
+            CGRect(
+                x: view.center.x - view.bounds.width / 2, y: view.center.y - view.bounds.height / 2,
+                width: view.bounds.width, height: view.bounds.height
+            )
+        }
+        func touchArea(_ span: Span, for frame: CGRect) -> CGRect {
+            CGRect(x: span.minX - frame.minX, y: -frame.minY, width: span.maxX - span.minX, height: Metrics.stripHeight)
+        }
+
+        let dismissFrame = layoutFrame(dismissKey)
+        let chipFrame = layoutFrame(modelChip)
+        let pillFrame = layoutFrame(pill)
+        var dismiss = Span(minX: 0, maxX: max(dismissFrame.maxX, Metrics.dismissMinTouchWidth))
+        var dictate = Span(minX: min(pillFrame.minX, bounds.width - Metrics.dictateMinTouchWidth), maxX: bounds.width)
+        if modelChip.isHidden {
+            split(&dismiss, &dictate)
+        } else {
+            var chip = Span(
+                minX: chipFrame.minX + SpeechModelChip.leadingPadding - Metrics.chipTouchMargin,
+                maxX: chipFrame.maxX - SpeechModelChip.trailingPadding + Metrics.chipTouchMargin
+            )
+            split(&dismiss, &chip)
+            split(&chip, &dictate)
+            modelChip.touchArea = touchArea(chip, for: chipFrame)
+        }
+        dismissKey.touchArea = touchArea(dismiss, for: dismissFrame)
+        pill.touchArea = touchArea(dictate, for: pillFrame)
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
@@ -414,6 +502,7 @@ final class DictationKeyboardView: UIView {
             modelChip.isHidden = true
             errorAfterChip.isActive = false
             errorAfterDismiss.isActive = true
+            setNeedsLayout()
             return
         }
         modelChip.setName(name, animated: animated && !modelChip.isHidden)
@@ -421,6 +510,7 @@ final class DictationKeyboardView: UIView {
         modelChip.isHidden = false
         errorAfterDismiss.isActive = false
         errorAfterChip.isActive = true
+        setNeedsLayout()
     }
 
     func closeModelPanel(animated: Bool) {

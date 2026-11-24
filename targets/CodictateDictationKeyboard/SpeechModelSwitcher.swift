@@ -69,6 +69,9 @@ final class SpeechModelChip: UIControl {
     private let closeMark = UIImageView()
     private(set) var isOpen = false
     private var enabledAnimator: UIViewPropertyAnimator?
+    /// Where touches land, in the chip's coordinates; the keyboard view sets it so the chip
+    /// answers across the strip's height and beside its text. Nil: its bounds.
+    var touchArea: CGRect?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -171,12 +174,21 @@ final class SpeechModelChip: UIControl {
         }
     }
 
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        touchArea?.contains(point) ?? super.point(inside: point, with: event)
+    }
+
     override var isHighlighted: Bool {
         didSet {
             guard isHighlighted != oldValue else { return }
             // Outside any animation block: instant.
             content.alpha = isHighlighted ? 0.5 : 1
         }
+    }
+
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
+        isHighlighted = false
     }
 
     override var isEnabled: Bool {
@@ -214,7 +226,7 @@ final class SpeechModelPanel: UIView {
     var onSelect: ((String) -> Void)?
     var onFormattingChange: ((Bool) -> Void)?
 
-    private let scrollView = UIScrollView()
+    private let scrollView = PanelScrollView()
     private let stack = UIStackView()
     private weak var currentRow: UIView?
     private(set) var firstAccessibleElement: UIView?
@@ -222,22 +234,31 @@ final class SpeechModelPanel: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        // Scrolls only when the rows do not fit; when they do, a tap that drifts a little
+        // still selects instead of starting a bounce.
         scrollView.alwaysBounceVertical = false
+        scrollView.alwaysBounceHorizontal = false
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.contentInset = UIEdgeInsets(top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
-        // Rows highlight on touch-down, so a scroll must be able to take the touch back.
+        // Rows highlight on touch-down; once a drag turns into a scroll, the scroll view takes
+        // the touch back (`PanelScrollView`), cancelling the row.
         scrollView.delaysContentTouches = false
+        scrollView.canCancelContentTouches = true
+        scrollView.rows = stack
         addSubview(scrollView)
         pinEdges(scrollView, to: self)
 
         stack.axis = .vertical
         stack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(stack)
+        // The content is exactly as wide as the panel and as tall as the rows, so it scrolls
+        // vertically only, and only when the rows are taller than the panel.
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            stack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
     }
 
@@ -297,10 +318,15 @@ final class SpeechModelPanel: UIView {
     /// the rows do not all fit, the scroll indicator flashes to say so.
     func scrollToCurrent() {
         layoutIfNeeded()
-        scrollView.contentOffset = CGPoint(x: 0, y: -scrollView.adjustedContentInset.top)
+        // Clamped to the scrollable range, so the first drag never jumps.
+        let inset = scrollView.adjustedContentInset
+        let top = -inset.top
+        let bottom = max(top, scrollView.contentSize.height + inset.bottom - scrollView.bounds.height)
+        var offset = top
         if let currentRow {
-            scrollView.scrollRectToVisible(currentRow.frame.insetBy(dx: 0, dy: -Self.verticalInset), animated: false)
+            offset = currentRow.frame.maxY + Self.verticalInset - scrollView.bounds.height
         }
+        scrollView.contentOffset = CGPoint(x: 0, y: min(max(offset, top), bottom))
         if scrollView.contentSize.height + scrollView.adjustedContentInset.top + scrollView.adjustedContentInset.bottom
             > scrollView.bounds.height {
             scrollView.flashScrollIndicators()
@@ -354,6 +380,36 @@ private final class Hairline: UIView {
 
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: 1 / max(traitCollection.displayScale, 1))
+    }
+}
+
+/// The panel's scroller. Its rows are controls that fill the content, and a stock scroll
+/// view never cancels a touch that began on a `UIControl`, so no drag starting on a row
+/// would scroll. Here every drag that turns into a scroll takes the touch back (the row's
+/// highlight clears, nothing is picked); a tap, or a touch that lifts before the pan begins,
+/// still reaches the row. A touch in the insets or on a separator goes to the nearest row.
+private final class PanelScrollView: UIScrollView {
+    /// How far above or below a row a touch still lands on it.
+    private static let rowSnapDistance: CGFloat = 12
+    weak var rows: UIStackView?
+
+    override func touchesShouldCancel(in view: UIView) -> Bool { true }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard let hit, hit === self || hit === rows || hit.superview === rows, !(hit is UIControl),
+              let rows else { return hit }
+        var nearest: UIControl?
+        var nearestDistance = Self.rowSnapDistance
+        for case let row as UIControl in rows.arrangedSubviews where !row.isHidden {
+            let frame = row.convert(row.bounds, to: self)
+            let distance = max(frame.minY - point.y, 0, point.y - frame.maxY)
+            if distance <= nearestDistance {
+                nearest = row
+                nearestDistance = distance
+            }
+        }
+        return nearest ?? hit
     }
 }
 
@@ -436,10 +492,18 @@ private final class SpeechModelRow: UIControl {
             backgroundColor = isHighlighted ? KeyboardPalette.toolbarPressed : .clear
         }
     }
+
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
+        isHighlighted = false
+    }
 }
 
-/// S1-mini on or off. The switch carries the row's accessibility.
-private final class FormattingRow: UIView {
+/// S1-mini on or off. A tap anywhere on the row flips the switch; the row takes every touch,
+/// the switch's included, so a drag that starts on the switch scrolls the panel like any
+/// other row (the thumb no longer slides). The switch carries the row's accessibility and
+/// still answers VoiceOver itself.
+private final class FormattingRow: UIControl {
     let toggle = UISwitch()
     var onChange: ((Bool) -> Void)?
 
@@ -481,10 +545,38 @@ private final class FormattingRow: UIView {
             hintLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 12),
             hintLabel.firstBaselineAnchor.constraint(equalTo: nameLabel.firstBaselineAnchor),
         ])
+        addTarget(self, action: #selector(rowTapped), for: .touchUpInside)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Touches anywhere on the row, the switch included, belong to the row.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, self.point(inside: point, with: event) else {
+            return nil
+        }
+        return self
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            guard isHighlighted != oldValue else { return }
+            // Outside any animation block: instant.
+            backgroundColor = isHighlighted ? KeyboardPalette.toolbarPressed : .clear
+        }
+    }
+
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
+        isHighlighted = false
+    }
+
+    @objc private func rowTapped() {
+        toggle.setOn(!toggle.isOn, animated: true)
+        onChange?(toggle.isOn)
+    }
+
+    /// VoiceOver flips the switch directly.
     @objc private func toggled() {
         onChange?(toggle.isOn)
     }

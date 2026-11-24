@@ -80,7 +80,8 @@ final class DictatePill: UIControl {
     }
 
     static let size = CGSize(width: 60, height: 34)
-    /// The capsule is smaller than a finger; touches this close still land on it.
+    /// The capsule is smaller than a finger; touches this close still land on it when the
+    /// keyboard view has not set `touchArea`.
     private static let minimumHitSize = CGSize(width: 72, height: 44)
     private static let glyphFont = UIFont.systemFont(ofSize: 15, weight: .semibold)
 
@@ -102,6 +103,9 @@ final class DictatePill: UIControl {
     private var contents: [UIView] { [idleContent, preparingContent, recordingContent, processingContent, doneContent] }
     private var colorAnimator: UIViewPropertyAnimator?
     private var recordingStartedAt: Date?
+    /// Where touches land, in the capsule's coordinates; the keyboard view sets it so the
+    /// capsule answers across the strip's height and out to the keyboard's right edge.
+    var touchArea: CGRect?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -168,6 +172,7 @@ final class DictatePill: UIControl {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if let touchArea { return touchArea.contains(point) }
         let dx = max(0, (Self.minimumHitSize.width - bounds.width) / 2)
         let dy = max(0, (Self.minimumHitSize.height - bounds.height) / 2)
         return bounds.insetBy(dx: -dx, dy: -dy).contains(point)
@@ -240,6 +245,11 @@ final class DictatePill: UIControl {
                     : .identity
             }
         }
+    }
+
+    override func cancelTracking(with event: UIEvent?) {
+        super.cancelTracking(with: event)
+        isHighlighted = false
     }
 
     // MARK: Transitions
